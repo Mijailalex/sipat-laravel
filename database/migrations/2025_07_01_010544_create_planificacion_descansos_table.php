@@ -10,15 +10,22 @@ return new class extends Migration
     {
         Schema::create('planificacion_descansos', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('conductor_id')->constrained('conductores');
-            $table->date('fecha_inicio');
-            $table->date('fecha_fin');
-            $table->enum('tipo_descanso', ['DIARIO', 'SEMANAL', 'MENSUAL', 'VACACIONES', 'MEDICO']);
-            $table->enum('estado', ['PROGRAMADO', 'ACTIVO', 'COMPLETADO', 'CANCELADO']);
+            $table->foreignId('conductor_id')->constrained('conductores')->onDelete('cascade');
+            $table->date('fecha_inicio_descanso');
+            $table->date('fecha_fin_descanso');
+            $table->enum('tipo_descanso', ['FISICO', 'SEMANAL', 'VACACIONES', 'MEDICO', 'PERSONAL'])->default('FISICO');
+            $table->enum('estado', ['PLANIFICADO', 'ACTIVO', 'COMPLETADO', 'CANCELADO'])->default('PLANIFICADO');
             $table->text('motivo')->nullable();
-            $table->json('configuracion_especial')->nullable();
+            $table->foreignId('aprobado_por')->nullable()->constrained('users')->onDelete('set null');
+            $table->datetime('fecha_aprobacion')->nullable();
+            $table->foreignId('creado_por')->constrained('users')->onDelete('cascade');
+            $table->text('observaciones')->nullable();
             $table->boolean('es_automatico')->default(false);
+            $table->json('datos_adicionales')->nullable();
             $table->timestamps();
+
+            $table->index(['conductor_id', 'estado']);
+            $table->index(['fecha_inicio_descanso', 'fecha_fin_descanso']);
         });
     }
 

@@ -10,13 +10,23 @@ return new class extends Migration
     {
         Schema::create('parametros', function (Blueprint $table) {
             $table->id();
+            $table->string('categoria', 50);
             $table->string('clave', 100)->unique();
+            $table->string('nombre', 200);
+            $table->text('descripcion')->nullable();
+            $table->enum('tipo', ['STRING', 'INTEGER', 'DECIMAL', 'BOOLEAN', 'JSON', 'DATE', 'TIME'])->default('STRING');
             $table->text('valor');
-            $table->enum('tipo', ['STRING', 'INTEGER', 'DECIMAL', 'BOOLEAN', 'JSON']);
-            $table->text('descripcion');
-            $table->string('categoria', 50); // TURNOS, DESCANSOS, VALIDACIONES, etc.
-            $table->boolean('editable')->default(true);
+            $table->text('valor_por_defecto');
+            $table->json('opciones')->nullable();
+            $table->json('validaciones')->nullable();
+            $table->boolean('modificable')->default(true);
+            $table->boolean('visible_interfaz')->default(true);
+            $table->integer('orden_visualizacion')->default(0);
+            $table->foreignId('modificado_por')->nullable()->constrained('users')->onDelete('set null');
             $table->timestamps();
+
+            $table->index(['categoria', 'visible_interfaz']);
+            $table->index('clave');
         });
     }
 

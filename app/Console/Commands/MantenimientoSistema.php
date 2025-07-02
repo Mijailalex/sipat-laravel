@@ -3,9 +3,7 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
-use App\Models\Notificacion;
-use App\Models\AuditoriaLog;
-use App\Models\ConfiguracionSistema;
+use App\Models\ConductorBackup;
 use Carbon\Carbon;
 
 class MantenimientoSistema extends Command
@@ -26,17 +24,14 @@ class MantenimientoSistema extends Command
 
         $tareasCompletadas = 0;
 
-        // Limpiar notificaciones antiguas
-        $this->info('📧 Limpiando notificaciones antiguas...');
-        $diasRetencion = ConfiguracionSistema::obtenerValor('retener_notificaciones_dias', 30);
-        $notificacionesEliminadas = $this->limpiarNotificacionesAntiguas($diasRetencion);
-        $this->line("   ✓ {$notificacionesEliminadas} notificaciones eliminadas");
-        $tareasCompletadas++;
-
-        // Limpiar logs de auditoría antiguos
-        $this->info('📋 Limpiando logs de auditoría antiguos...');
-        $logsEliminados = $this->limpiarLogsAuditoria(90); // 90 días
-        $this->line("   ✓ {$logsEliminados} logs eliminados");
+        // Limpiar backups antiguos de conductores
+        $this->info('🗂️ Limpiando backups antiguos de conductores...');
+        try {
+            $backupsEliminados = ConductorBackup::limpiarBackupsAntiguos(90);
+            $this->line("   ✓ {$backupsEliminados} backups eliminados");
+        } catch (\Exception $e) {
+            $this->warn("   ⚠️ Error al limpiar backups: " . $e->getMessage());
+        }
         $tareasCompletadas++;
 
         // Optimizar base de datos
@@ -61,29 +56,15 @@ class MantenimientoSistema extends Command
         }
         $tareasCompletadas++;
 
+        // Limpiar cache de parámetros
+        $this->info('🧹 Limpiando cache del sistema...');
+        \Illuminate\Support\Facades\Cache::flush();
+        $this->line("   ✓ Cache limpiado");
+        $tareasCompletadas++;
+
         $this->info("✅ Mantenimiento completado. {$tareasCompletadas} tareas ejecutadas.");
 
-        // Crear notificación de mantenimiento
-        Notificacion::crear(
-            'SISTEMA',
-            'Mantenimiento completado',
-            "Mantenimiento automático ejecutado. {$tareasCompletadas} tareas completadas.",
-            'INFO'
-        );
-
         return Command::SUCCESS;
-    }
-
-    private function limpiarNotificacionesAntiguas($dias)
-    {
-        $fechaLimite = Carbon::now()->subDays($dias);
-        return Notificacion::where('created_at', '<', $fechaLimite)->delete();
-    }
-
-    private function limpiarLogsAuditoria($dias)
-    {
-        $fechaLimite = Carbon::now()->subDays($dias);
-        return AuditoriaLog::where('created_at', '<', $fechaLimite)->delete();
     }
 
     private function optimizarBaseDatos()
@@ -91,9 +72,8 @@ class MantenimientoSistema extends Command
         $tablas = [
             'conductores',
             'validaciones',
-            'notificaciones',
-            'auditoria_logs',
-            'rutas_cortas'
+            'rutas_cortas',
+            'metricas_diarias'
         ];
 
         $optimizadas = 0;
@@ -113,9 +93,8 @@ class MantenimientoSistema extends Command
     {
         $directorios = [
             storage_path('app/temp'),
-            storage_path('framework/cache'),
-            storage_path('framework/sessions'),
-            storage_path('framework/views')
+            storage_path('framework/cache/data'),
+            storage_path('logs')
         ];
 
         $eliminados = 0;
@@ -123,7 +102,7 @@ class MantenimientoSistema extends Command
             if (is_dir($directorio)) {
                 $archivos = glob($directorio . '/*');
                 foreach ($archivos as $archivo) {
-                    if (is_file($archivo) && filemtime($archivo) < strtotime('-1 day')) {
+                    if (is_file($archivo) && filemtime($archivo) < strtotime('-7 days')) {
                         unlink($archivo);
                         $eliminados++;
                     }
@@ -138,23 +117,18 @@ class MantenimientoSistema extends Command
     {
         $problemas = 0;
 
-        // Verificar conductores sin validaciones críticas resueltas
-        $conductoresCriticos = \App\Models\Conductor::where('dias_acumulados', '>=', 6)
-            ->where('estado', '!=', 'DESCANSO')
-            ->count();
+        try {
+            // Verificar conductores críticos
+            $conductoresCriticos = \App\Models\Conductor::where('dias_acumulados', '>=', 6)
+                ->where('estado', 'DISPONIBLE')
+                ->count();
 
-        if ($conductoresCriticos > 0) {
-            $this->warn("   ⚠️ {$conductoresCriticos} conductores requieren descanso");
-            $problemas++;
-        }
-
-        // Verificar validaciones pendientes muy antiguas
-        $validacionesAntiguas = \App\Models\Validacion::where('estado', 'PENDIENTE')
-            ->where('created_at', '<', Carbon::now()->subDays(7))
-            ->count();
-
-        if ($validacionesAntiguas > 0) {
-            $this->warn("   ⚠️ {$validacionesAntiguas} validaciones pendientes muy antiguas");
+            if ($conductoresCriticos > 0) {
+                $this->warn("   ⚠️ {$conductoresCriticos} conductores requieren descanso");
+                $problemas++;
+            }
+        } catch (\Exception $e) {
+            $this->warn("   ⚠️ Error verificando conductores: " . $e->getMessage());
             $problemas++;
         }
 

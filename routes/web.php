@@ -117,4 +117,8 @@ Route::prefix('reportes-avanzados')->group(function () {
 });
 
 // Ruta para métricas en tiempo real
-Route::get('/dashboard/metricas-tiempo-real', [DashboardController::class, 'obtenerMetricasEnTiempoReal'])->name('dashboard.metricas-tiempo-real');
+Route::get('/', function () {
+    return view('welcome');
+});
+
+Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');

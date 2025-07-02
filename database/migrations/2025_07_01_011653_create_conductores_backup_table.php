@@ -10,15 +10,19 @@ return new class extends Migration
     {
         Schema::create('conductores_backup', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('conductor_id')->constrained('conductores');
-            $table->enum('tipo_backup', ['RETENCION', 'EMERGENCIA', 'FLOTANTE']);
-            $table->json('zonas_cobertura');
-            $table->json('tipos_servicio_disponible');
-            $table->integer('prioridad')->default(1);
-            $table->boolean('disponible_24h')->default(false);
-            $table->time('hora_inicio_disponibilidad')->nullable();
-            $table->time('hora_fin_disponibilidad')->nullable();
+            $table->unsignedBigInteger('conductor_id');
+            $table->string('accion', 50); // 'CREADO', 'ACTUALIZADO', 'ELIMINADO'
+            $table->json('datos_anteriores')->nullable();
+            $table->json('datos_nuevos')->nullable();
+            $table->json('campos_modificados')->nullable();
+            $table->foreignId('usuario_id')->nullable()->constrained('users')->onDelete('set null');
+            $table->string('ip_address', 45)->nullable();
+            $table->string('user_agent', 500)->nullable();
+            $table->text('razon_cambio')->nullable();
             $table->timestamps();
+
+            $table->index(['conductor_id', 'accion']);
+            $table->index('created_at');
         });
     }
 

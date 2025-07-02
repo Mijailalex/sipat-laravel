@@ -10,17 +10,22 @@ return new class extends Migration
     {
         Schema::create('balance_rutas_cortas', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('conductor_id')->constrained('conductores')->onDelete('cascade');
-            $table->integer('semana_numero'); // Número de semana del año
-            $table->integer('año');
+            $table->date('fecha');
+            $table->string('tramo', 100);
+            $table->integer('total_rutas')->default(0);
             $table->integer('rutas_completadas')->default(0);
-            $table->integer('rutas_programadas')->default(0);
-            $table->boolean('objetivo_cumplido')->default(false); // Si cumplió el objetivo de 3-4 rutas
-            $table->decimal('total_ingresos', 10, 2)->default(0);
+            $table->integer('rutas_canceladas')->default(0);
+            $table->integer('total_pasajeros')->default(0);
+            $table->decimal('ingreso_total', 12, 2)->default(0.00);
+            $table->decimal('ingreso_promedio_ruta', 10, 2)->default(0.00);
+            $table->decimal('ocupacion_promedio', 5, 2)->default(0.00);
+            $table->integer('conductores_participantes')->default(0);
+            $table->decimal('eficiencia_promedio', 5, 2)->default(0.00);
+            $table->json('metricas_adicionales')->nullable();
             $table->timestamps();
 
-            $table->unique(['conductor_id', 'semana_numero', 'año']);
-            $table->index(['semana_numero', 'año']);
+            $table->unique(['fecha', 'tramo']);
+            $table->index(['fecha', 'tramo']);
         });
     }
 

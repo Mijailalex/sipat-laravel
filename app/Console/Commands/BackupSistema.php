@@ -90,11 +90,13 @@ class BackupSistema extends Command
             $backupPath . $filename
         );
 
-        exec($comando, $output, $returnVar);
+        exec($comando, $output, $return);
 
-        if ($returnVar !== 0) {
+        if ($return !== 0) {
             throw new \Exception('Error al ejecutar mysqldump');
         }
+
+        $this->line("   ✓ Archivo creado: {$filename}");
     }
 
     private function crearManifiesto($filename, $tipo)
@@ -102,29 +104,19 @@ class BackupSistema extends Command
         $manifiesto = [
             'archivo' => $filename,
             'tipo' => $tipo,
-            'fecha_creacion' => Carbon::now()->toISOString(),
-            'version_sistema' => '1.0.0',
-            'tablas_incluidas' => $this->obtenerTablasSistema(),
-            'tamaño_archivo' => filesize(storage_path("app/backups/{$filename}")),
-            'checksum' => md5_file(storage_path("app/backups/{$filename}"))
+            'fecha_creacion' => now()->toDateTimeString(),
+            'version_sistema' => config('app.version', '1.0.0'),
+            'base_datos' => config('database.connections.mysql.database'),
+            'tamaño_archivo' => filesize(storage_path('app/backups/' . $filename)),
+            'checksum' => md5_file(storage_path('app/backups/' . $filename))
         ];
 
         $manifestoFile = str_replace('.sql', '_manifiesto.json', $filename);
         Storage::disk('local')->put(
-            "backups/{$manifestoFile}",
+            'backups/' . $manifestoFile,
             json_encode($manifiesto, JSON_PRETTY_PRINT)
         );
-    }
 
-    private function obtenerTablasSistema()
-    {
-        $tablas = DB::select('SHOW TABLES');
-        $nombreTablas = [];
-
-        foreach ($tablas as $tabla) {
-            $nombreTablas[] = array_values((array) $tabla)[0];
-        }
-
-        return $nombreTablas;
+        $this->line("   ✓ Manifiesto creado: {$manifestoFile}");
     }
 }

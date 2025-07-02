@@ -2,449 +2,430 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\RutaCorta;
+use App\Models\Conductor;
+use App\Models\Bus;
 use App\Models\ConfiguracionTramo;
 use App\Models\BalanceRutasCortas;
-use App\Models\Conductor;
-use App\Models\Parametro;
-use App\Models\Validacion;
-use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Validator;
+use Carbon\Carbon;
 
 class RutaCortaController extends Controller
 {
     public function index(Request $request)
     {
-        $query = RutaCorta::with('conductor');
+        $query = RutaCorta::with(['conductor:id,codigo_conductor,nombre,apellido', 'bus:id,numero_bus,placa']);
 
         // Filtros
-        if ($request->filled('conductor_id')) {
-            $query->where('conductor_id', $request->conductor_id);
+        if ($request->filled('fecha')) {
+            $query->where('fecha', $request->fecha);
+        } else {
+            // Por defecto mostrar hoy
+            $query->where('fecha', now()->toDateString());
         }
 
         if ($request->filled('estado')) {
             $query->where('estado', $request->estado);
         }
 
-        if ($request->filled('fecha_desde')) {
-            $query->where('fecha_asignacion', '>=', $request->fecha_desde);
-        }
-
-        if ($request->filled('fecha_hasta')) {
-            $query->where('fecha_asignacion', '<=', $request->fecha_hasta);
-        }
-
         if ($request->filled('tramo')) {
-            $query->where('tramo', 'like', '%' . $request->tramo . '%');
+            $query->where('tramo', $request->tramo);
         }
 
-        if ($request->filled('semana')) {
-            $query->where('semana_numero', $request->semana);
+        if ($request->filled('conductor_id')) {
+            $query->where('conductor_id', $request->conductor_id);
         }
 
-        // Ordenamiento por defecto
-        $rutasCortas = $query->orderBy('fecha_asignacion', 'desc')
-            ->orderBy('hora_inicio')
-            ->paginate(20);
+        if ($request->filled('buscar')) {
+            $buscar = $request->buscar;
+            $query->where(function ($q) use ($buscar) {
+                $q->where('origen', 'like', "%{$buscar}%")
+                  ->orWhere('destino', 'like', "%{$buscar}%")
+                  ->orWhere('tramo', 'like', "%{$buscar}%")
+                  ->orWhereHas('conductor', function ($conductorQuery) use ($buscar) {
+                      $conductorQuery->where('codigo_conductor', 'like', "%{$buscar}%");
+                  });
+            });
+        }
 
-        // Métricas principales
-        $metricas = $this->calcularMetricas();
+        $rutasCortas = $query->orderBy('hora_inicio')->paginate(20);
+
+        // Estadísticas para la fecha seleccionada
+        $fechaSeleccionada = $request->get('fecha', now()->toDateString());
+        $estadisticas = RutaCorta::where('fecha', $fechaSeleccionada)
+            ->selectRaw('
+                COUNT(*) as total,
+                SUM(CASE WHEN estado = "COMPLETADA" THEN 1 ELSE 0 END) as completadas,
+                SUM(CASE WHEN estado = "EN_CURSO" THEN 1 ELSE 0 END) as en_curso,
+                SUM(CASE WHEN estado = "PROGRAMADA" THEN 1 ELSE 0 END) as programadas,
+                SUM(CASE WHEN estado = "CANCELADA" THEN 1 ELSE 0 END) as canceladas,
+                SUM(CASE WHEN estado = "COMPLETADA" THEN pasajeros_transportados ELSE 0 END) as total_pasajeros,
+                SUM(CASE WHEN estado = "COMPLETADA" THEN ingreso_estimado ELSE 0 END) as total_ingresos
+            ')
+            ->first();
 
         // Datos para filtros
-        $conductores = Conductor::select('id', 'codigo', 'nombre')
-            ->orderBy('nombre')
-            ->get();
-
-        $tramos = ConfiguracionTramo::where('es_ruta_corta', true)
-            ->where('activo', true)
-            ->pluck('tramo')
-            ->unique()
-            ->sort();
+        $tramos = ConfiguracionTramo::activos()->orderBy('nombre')->get();
+        $conductores = Conductor::disponibles()->orderBy('codigo_conductor')->get();
 
         return view('rutas-cortas.index', compact(
             'rutasCortas',
-            'metricas',
+            'estadisticas',
+            'tramos',
             'conductores',
-            'tramos'
+            'fechaSeleccionada'
         ));
+    }
+
+    public function show($id)
+    {
+        $rutaCorta = RutaCorta::with([
+            'conductor',
+            'bus',
+            'configuracionTramo'
+        ])->findOrFail($id);
+
+        return view('rutas-cortas.show', compact('rutaCorta'));
     }
 
     public function create()
     {
-        $conductores = Conductor::disponibles()
-            ->select('id', 'codigo', 'nombre', 'origen')
-            ->orderBy('nombre')
-            ->get();
+        $tramos = ConfiguracionTramo::activos()->orderBy('nombre')->get();
+        $conductores = Conductor::disponibles()->orderBy('codigo_conductor')->get();
+        $buses = Bus::operativos()->orderBy('numero_bus')->get();
 
-        $tramos = ConfiguracionTramo::where('es_ruta_corta', true)
-            ->where('activo', true)
-            ->orderBy('tramo')
-            ->get();
-
-        return view('rutas-cortas.create', compact('conductores', 'tramos'));
+        return view('rutas-cortas.create', compact('tramos', 'conductores', 'buses'));
     }
 
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), [
+        $validated = $request->validate([
             'conductor_id' => 'required|exists:conductores,id',
-            'tramo' => 'required|exists:configuracion_tramos,tramo',
-            'fecha_asignacion' => 'required|date|after_or_equal:today',
-            'hora_inicio' => 'required',
+            'bus_id' => 'nullable|exists:buses,id',
+            'fecha' => 'required|date',
+            'hora_inicio' => 'required|date_format:H:i',
+            'origen' => 'required|string|max:200',
+            'destino' => 'required|string|max:200',
+            'tramo' => 'required|string|max:100',
+            'distancia_km' => 'nullable|numeric|min:0',
+            'tarifa_cobrada' => 'nullable|numeric|min:0',
             'observaciones' => 'nullable|string'
         ]);
-
-        if ($validator->fails()) {
-            return redirect()->back()
-                ->withErrors($validator)
-                ->withInput();
-        }
-
-        // Validar si se puede asignar la ruta corta
-        $validacion = RutaCorta::puedeAsignarRutaCorta(
-            $request->conductor_id,
-            $request->fecha_asignacion
-        );
-
-        if (!$validacion['puede']) {
-            return redirect()->back()
-                ->with('error', $validacion['razon'])
-                ->withInput();
-        }
 
         try {
             DB::beginTransaction();
 
-            // Obtener configuración del tramo
-            $configTramo = ConfiguracionTramo::where('tramo', $request->tramo)->first();
-
-            $fechaAsignacion = Carbon::parse($request->fecha_asignacion);
-            $horaInicio = Carbon::parse($request->hora_inicio);
-            $horaFin = $horaInicio->copy()->addHours($configTramo->duracion_horas);
-
-            // Verificar si es consecutiva
-            $esConsecutiva = RutaCorta::where('conductor_id', $request->conductor_id)
-                ->where('fecha_asignacion', $fechaAsignacion->copy()->subDay())
-                ->where('estado', '!=', 'CANCELADA')
-                ->exists();
-
-            $rutaCorta = RutaCorta::create([
-                'conductor_id' => $request->conductor_id,
-                'tramo' => $request->tramo,
-                'rumbo' => $configTramo->rumbo,
-                'fecha_asignacion' => $fechaAsignacion,
-                'hora_inicio' => $horaInicio->format('H:i:s'),
-                'hora_fin' => $horaFin->format('H:i:s'),
-                'duracion_horas' => $configTramo->duracion_horas,
-                'semana_numero' => $fechaAsignacion->week,
-                'dia_semana' => $fechaAsignacion->dayOfWeek,
-                'es_consecutiva' => $esConsecutiva,
-                'ingreso_estimado' => $configTramo->ingreso_base,
-                'observaciones' => $request->observaciones
-            ]);
-
-            // Actualizar última ruta corta del conductor
-            $conductor = Conductor::find($request->conductor_id);
-            $conductor->update(['ultima_ruta_corta' => $fechaAsignacion]);
-
-            // Crear validación si es consecutiva (violación de regla)
-            if ($esConsecutiva) {
-                Validacion::create([
-                    'tipo' => 'RUTAS_CORTAS_CONSECUTIVAS',
-                    'conductor_id' => $request->conductor_id,
-                    'mensaje' => 'Se asignó ruta corta en días consecutivos para el conductor ' . $conductor->nombre,
-                    'severidad' => 'ADVERTENCIA',
-                    'estado' => 'PENDIENTE'
-                ]);
+            // Verificar disponibilidad del conductor
+            $conductor = Conductor::findOrFail($validated['conductor_id']);
+            if (!$conductor->estaDisponiblePara($validated['hora_inicio'])) {
+                throw new \Exception('El conductor no está disponible para este horario');
             }
 
-            // Actualizar balance semanal
-            $this->actualizarBalanceSemanal($request->conductor_id, $fechaAsignacion->week, $fechaAsignacion->year);
+            // Verificar disponibilidad del bus si se asignó
+            if ($validated['bus_id']) {
+                $bus = Bus::findOrFail($validated['bus_id']);
+                if (!$bus->estaDisponiblePara($validated['fecha'], $validated['hora_inicio'])) {
+                    throw new \Exception('El bus no está disponible para este horario');
+                }
+            }
+
+            $rutaCorta = RutaCorta::create($validated);
 
             DB::commit();
 
-            return redirect()->route('rutas-cortas.index')
-                ->with('success', 'Ruta corta asignada exitosamente.');
+            return redirect()
+                ->route('rutas-cortas.show', $rutaCorta)
+                ->with('success', 'Ruta corta creada exitosamente');
 
         } catch (\Exception $e) {
             DB::rollback();
-            return redirect()->back()
-                ->with('error', 'Error al asignar ruta corta: ' . $e->getMessage())
-                ->withInput();
+            return back()
+                ->withInput()
+                ->with('error', 'Error al crear ruta corta: ' . $e->getMessage());
         }
     }
 
-    public function show(RutaCorta $rutaCorta)
+    public function edit($id)
     {
-        $rutaCorta->load('conductor');
+        $rutaCorta = RutaCorta::findOrFail($id);
 
-        // Balance semanal del conductor
-        $balanceSemanal = RutaCorta::obtenerBalanceSemanal(
-            $rutaCorta->conductor_id,
-            $rutaCorta->semana_numero,
-            $rutaCorta->fecha_asignacion->year
-        );
-
-        // Rutas de la misma semana
-        $rutasSemana = RutaCorta::where('conductor_id', $rutaCorta->conductor_id)
-            ->where('semana_numero', $rutaCorta->semana_numero)
-            ->whereYear('fecha_asignacion', $rutaCorta->fecha_asignacion->year)
-            ->orderBy('fecha_asignacion')
-            ->get();
-
-        return view('rutas-cortas.show', compact(
-            'rutaCorta',
-            'balanceSemanal',
-            'rutasSemana'
-        ));
-    }
-
-    public function edit(RutaCorta $rutaCorta)
-    {
-        if (in_array($rutaCorta->estado, ['COMPLETADA', 'CANCELADA'])) {
-            return redirect()->route('rutas-cortas.index')
-                ->with('error', 'No se puede editar una ruta ' . strtolower($rutaCorta->estado) . '.');
-        }
-
-        $conductores = Conductor::disponibles()
-            ->select('id', 'codigo', 'nombre', 'origen')
-            ->orderBy('nombre')
-            ->get();
-
-        $tramos = ConfiguracionTramo::where('es_ruta_corta', true)
-            ->where('activo', true)
-            ->orderBy('tramo')
-            ->get();
-
-        return view('rutas-cortas.edit', compact('rutaCorta', 'conductores', 'tramos'));
-    }
-
-    public function update(Request $request, RutaCorta $rutaCorta)
-    {
-        if (in_array($rutaCorta->estado, ['COMPLETADA', 'CANCELADA'])) {
-            return redirect()->route('rutas-cortas.index')
-                ->with('error', 'No se puede editar una ruta ' . strtolower($rutaCorta->estado) . '.');
-        }
-
-        $validator = Validator::make($request->all(), [
-            'estado' => 'required|in:PROGRAMADA,EN_CURSO,COMPLETADA,CANCELADA',
-            'hora_inicio' => 'required',
-            'observaciones' => 'nullable|string'
-        ]);
-
-        if ($validator->fails()) {
-            return redirect()->back()
-                ->withErrors($validator)
-                ->withInput();
-        }
-
-        try {
-            DB::beginTransaction();
-
-            $estadoAnterior = $rutaCorta->estado;
-
-            // Recalcular hora fin si cambió la hora inicio
-            if ($request->hora_inicio != $rutaCorta->hora_inicio->format('H:i')) {
-                $horaInicio = Carbon::parse($request->hora_inicio);
-                $horaFin = $horaInicio->copy()->addHours($rutaCorta->duracion_horas);
-
-                $rutaCorta->update([
-                    'estado' => $request->estado,
-                    'hora_inicio' => $horaInicio->format('H:i:s'),
-                    'hora_fin' => $horaFin->format('H:i:s'),
-                    'observaciones' => $request->observaciones
-                ]);
-            } else {
-                $rutaCorta->update([
-                    'estado' => $request->estado,
-                    'observaciones' => $request->observaciones
-                ]);
-            }
-
-            // Si cambió a completada, actualizar métricas del conductor
-            if ($request->estado === 'COMPLETADA' && $estadoAnterior !== 'COMPLETADA') {
-                $conductor = $rutaCorta->conductor;
-                $conductor->increment('rutas_completadas');
-                $conductor->increment('horas_trabajadas', $rutaCorta->duracion_horas);
-            }
-
-            // Actualizar balance semanal
-            $this->actualizarBalanceSemanal(
-                $rutaCorta->conductor_id,
-                $rutaCorta->semana_numero,
-                $rutaCorta->fecha_asignacion->year
-            );
-
-            DB::commit();
-
-            return redirect()->route('rutas-cortas.index')
-                ->with('success', 'Ruta corta actualizada exitosamente.');
-
-        } catch (\Exception $e) {
-            DB::rollback();
-            return redirect()->back()
-                ->with('error', 'Error al actualizar ruta corta: ' . $e->getMessage())
-                ->withInput();
-        }
-    }
-
-    public function destroy(RutaCorta $rutaCorta)
-    {
         if ($rutaCorta->estado === 'COMPLETADA') {
-            return redirect()->route('rutas-cortas.index')
-                ->with('error', 'No se puede eliminar una ruta completada.');
+            return back()->with('error', 'No se puede editar una ruta completada');
         }
+
+        $tramos = ConfiguracionTramo::activos()->orderBy('nombre')->get();
+        $conductores = Conductor::disponibles()->orderBy('codigo_conductor')->get();
+        $buses = Bus::operativos()->orderBy('numero_bus')->get();
+
+        return view('rutas-cortas.edit', compact('rutaCorta', 'tramos', 'conductores', 'buses'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $rutaCorta = RutaCorta::findOrFail($id);
+
+        if ($rutaCorta->estado === 'COMPLETADA') {
+            return back()->with('error', 'No se puede modificar una ruta completada');
+        }
+
+        $validated = $request->validate([
+            'conductor_id' => 'required|exists:conductores,id',
+            'bus_id' => 'nullable|exists:buses,id',
+            'fecha' => 'required|date',
+            'hora_inicio' => 'required|date_format:H:i',
+            'origen' => 'required|string|max:200',
+            'destino' => 'required|string|max:200',
+            'tramo' => 'required|string|max:100',
+            'distancia_km' => 'nullable|numeric|min:0',
+            'tarifa_cobrada' => 'nullable|numeric|min:0',
+            'observaciones' => 'nullable|string'
+        ]);
 
         try {
             DB::beginTransaction();
 
-            $conductorId = $rutaCorta->conductor_id;
-            $semana = $rutaCorta->semana_numero;
-            $año = $rutaCorta->fecha_asignacion->year;
-
-            $rutaCorta->delete();
-
-            // Actualizar balance semanal
-            $this->actualizarBalanceSemanal($conductorId, $semana, $año);
+            $rutaCorta->update($validated);
 
             DB::commit();
 
-            return redirect()->route('rutas-cortas.index')
-                ->with('success', 'Ruta corta eliminada exitosamente.');
+            return redirect()
+                ->route('rutas-cortas.show', $rutaCorta)
+                ->with('success', 'Ruta corta actualizada exitosamente');
 
         } catch (\Exception $e) {
             DB::rollback();
-            return redirect()->route('rutas-cortas.index')
-                ->with('error', 'Error al eliminar ruta corta: ' . $e->getMessage());
+            return back()
+                ->withInput()
+                ->with('error', 'Error al actualizar ruta corta: ' . $e->getMessage());
         }
     }
 
-    // Configuración de tramos
-    public function configuracionTramos()
+    public function iniciar($id)
     {
-        $tramos = ConfiguracionTramo::orderBy('tramo')->paginate(20);
+        $rutaCorta = RutaCorta::findOrFail($id);
 
-        // Parámetros relacionados con rutas cortas
-        $parametros = Parametro::where('categoria', 'RUTAS')
-            ->orderBy('clave')
-            ->get();
+        try {
+            $rutaCorta->iniciar();
 
-        return view('rutas-cortas.configuracion.tramos', compact('tramos', 'parametros'));
+            return $this->successResponse(null, 'Ruta iniciada exitosamente');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al iniciar ruta: ' . $e->getMessage());
+        }
     }
 
-    // Validar asignación
-    public function validarAsignacion(Request $request)
+    public function completar(Request $request, $id)
     {
-        $request->validate([
-            'conductor_id' => 'required|exists:conductores,id',
-            'fecha' => 'required|date'
+        $rutaCorta = RutaCorta::findOrFail($id);
+
+        $validated = $request->validate([
+            'pasajeros_transportados' => 'required|integer|min:0',
+            'ingreso_estimado' => 'nullable|numeric|min:0',
+            'calificacion_servicio' => 'nullable|numeric|between:1,5',
+            'observaciones' => 'nullable|string'
         ]);
 
-        $validacion = RutaCorta::puedeAsignarRutaCorta(
-            $request->conductor_id,
-            $request->fecha
-        );
+        try {
+            $rutaCorta->completar($validated);
 
-        return response()->json($validacion);
+            return $this->successResponse(null, 'Ruta completada exitosamente');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al completar ruta: ' . $e->getMessage());
+        }
     }
 
-    // Reporte de conductor
-    public function reporteConductor(Conductor $conductor, Request $request)
+    public function cancelar(Request $request, $id)
     {
-        $semana = $request->get('semana', Carbon::now()->week);
-        $año = $request->get('año', Carbon::now()->year);
+        $rutaCorta = RutaCorta::findOrFail($id);
 
-        // Balance semanal del conductor
-        $balance = RutaCorta::obtenerBalanceSemanal($conductor->id, $semana, $año);
+        $validated = $request->validate([
+            'motivo' => 'nullable|string|max:500'
+        ]);
 
-        // Rutas detalladas
-        $rutas = RutaCorta::where('conductor_id', $conductor->id)
-            ->where('semana_numero', $semana)
-            ->whereYear('fecha_asignacion', $año)
-            ->orderBy('fecha_asignacion')
+        try {
+            $rutaCorta->cancelar($validated['motivo'] ?? null);
+
+            return $this->successResponse(null, 'Ruta cancelada exitosamente');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al cancelar ruta: ' . $e->getMessage());
+        }
+    }
+
+    public function reporteConductor(Request $request)
+    {
+        $conductorId = $request->get('conductor_id');
+        $fechaInicio = $request->get('fecha_inicio', now()->subDays(30)->toDateString());
+        $fechaFin = $request->get('fecha_fin', now()->toDateString());
+
+        if (!$conductorId) {
+            return back()->with('error', 'Debe seleccionar un conductor');
+        }
+
+        $conductor = Conductor::findOrFail($conductorId);
+
+        $rutas = RutaCorta::where('conductor_id', $conductorId)
+            ->whereBetween('fecha', [$fechaInicio, $fechaFin])
+            ->with(['bus:id,numero_bus', 'configuracionTramo'])
+            ->orderBy('fecha', 'desc')
             ->get();
 
-        // Histórico de las últimas 4 semanas
-        $historico = collect();
-        for ($i = 3; $i >= 0; $i--) {
-            $semanaHistorica = $semana - $i;
-            if ($semanaHistorica <= 0) {
-                $semanaHistorica += 52;
-                $añoHistorico = $año - 1;
-            } else {
-                $añoHistorico = $año;
-            }
-
-            $balanceHistorico = RutaCorta::obtenerBalanceSemanal($conductor->id, $semanaHistorica, $añoHistorico);
-            $historico->push($balanceHistorico);
-        }
+        $estadisticas = [
+            'total_rutas' => $rutas->count(),
+            'completadas' => $rutas->where('estado', 'COMPLETADA')->count(),
+            'canceladas' => $rutas->where('estado', 'CANCELADA')->count(),
+            'total_pasajeros' => $rutas->where('estado', 'COMPLETADA')->sum('pasajeros_transportados'),
+            'total_ingresos' => $rutas->where('estado', 'COMPLETADA')->sum('ingreso_estimado'),
+            'promedio_pasajeros' => $rutas->where('estado', 'COMPLETADA')->avg('pasajeros_transportados') ?: 0,
+            'promedio_calificacion' => $rutas->where('estado', 'COMPLETADA')->whereNotNull('calificacion_servicio')->avg('calificacion_servicio') ?: 0,
+            'eficiencia' => $rutas->count() > 0 ?
+                round(($rutas->where('estado', 'COMPLETADA')->count() / $rutas->count()) * 100, 2) : 0
+        ];
 
         return view('rutas-cortas.reporte-conductor', compact(
             'conductor',
-            'balance',
             'rutas',
-            'historico',
-            'semana',
-            'año'
+            'estadisticas',
+            'fechaInicio',
+            'fechaFin'
         ));
     }
 
-    // ============ MÉTODOS HELPER ============
-
-    private function calcularMetricas()
+    public function balanceTramos(Request $request)
     {
-        $hoy = Carbon::now();
-        $semanaActual = $hoy->week;
+        $fecha = $request->get('fecha', now()->toDateString());
 
-        return [
-            'total_rutas' => RutaCorta::count(),
-            'programadas_hoy' => RutaCorta::where('fecha_asignacion', $hoy->toDateString())
-                ->where('estado', 'PROGRAMADA')
-                ->count(),
-            'completadas_semana' => RutaCorta::where('semana_numero', $semanaActual)
-                ->where('estado', 'COMPLETADA')
-                ->count(),
-            'promedio_duracion' => round(RutaCorta::avg('duracion_horas') ?? 0, 1),
-            'total_ingresos_semana' => RutaCorta::where('semana_numero', $semanaActual)
-                ->where('estado', 'COMPLETADA')
-                ->sum('ingreso_estimado'),
-            'conductores_con_rutas' => RutaCorta::where('semana_numero', $semanaActual)
-                ->distinct('conductor_id')
-                ->count(),
-            'violaciones_consecutivas' => RutaCorta::where('es_consecutiva', true)
-                ->where('semana_numero', $semanaActual)
-                ->count()
-        ];
-    }
-
-    private function actualizarBalanceSemanal($conductorId, $semana, $año)
-    {
-        $rutas = RutaCorta::where('conductor_id', $conductorId)
-            ->where('semana_numero', $semana)
-            ->whereYear('fecha_asignacion', $año)
+        $balance = BalanceRutasCortas::where('fecha', $fecha)
+            ->with('configuracionTramo:codigo_tramo,nombre,origen,destino')
+            ->orderBy('total_rutas', 'desc')
             ->get();
 
-        $programadas = $rutas->where('estado', 'PROGRAMADA')->count();
-        $completadas = $rutas->where('estado', 'COMPLETADA')->count();
-        $totalIngresos = $rutas->where('estado', 'COMPLETADA')->sum('ingreso_estimado');
+        // Si no hay balance para la fecha, generarlo
+        if ($balance->isEmpty()) {
+            $tramos = RutaCorta::where('fecha', $fecha)
+                ->distinct('tramo')
+                ->pluck('tramo');
 
-        $total = $programadas + $completadas;
-        $objetivoCumplido = $total >= 3 && $total <= 4;
+            foreach ($tramos as $tramo) {
+                BalanceRutasCortas::actualizarBalance($fecha, $tramo);
+            }
 
-        BalanceRutasCortas::updateOrCreate(
-            [
-                'conductor_id' => $conductorId,
-                'semana_numero' => $semana,
-                'año' => $año
-            ],
-            [
-                'rutas_programadas' => $programadas,
-                'rutas_completadas' => $completadas,
-                'objetivo_cumplido' => $objetivoCumplido,
-                'total_ingresos' => $totalIngresos
-            ]
-        );
+            $balance = BalanceRutasCortas::where('fecha', $fecha)
+                ->with('configuracionTramo')
+                ->orderBy('total_rutas', 'desc')
+                ->get();
+        }
+
+        return view('rutas-cortas.balance-tramos', compact('balance', 'fecha'));
+    }
+
+    public function tendenciasTramo(Request $request, $tramo)
+    {
+        $dias = $request->get('dias', 30);
+
+        $tendencias = RutaCorta::obtenerTendenciasTramo($tramo, $dias);
+        $configuracionTramo = ConfiguracionTramo::where('codigo_tramo', $tramo)->first();
+
+        return $this->successResponse([
+            'tramo' => $configuracionTramo,
+            'tendencias' => $tendencias
+        ], 'Tendencias obtenidas exitosamente');
+    }
+
+    public function rankingConductores(Request $request)
+    {
+        $dias = $request->get('dias', 30);
+
+        $ranking = RutaCorta::obtenerRankingConductores($dias);
+
+        return $this->successResponse($ranking, 'Ranking obtenido exitosamente');
+    }
+
+    public function exportar(Request $request)
+    {
+        $query = RutaCorta::with(['conductor:id,codigo_conductor,nombre,apellido', 'bus:id,numero_bus']);
+
+        // Aplicar filtros
+        if ($request->filled('fecha_inicio')) {
+            $query->where('fecha', '>=', $request->fecha_inicio);
+        }
+
+        if ($request->filled('fecha_fin')) {
+            $query->where('fecha', '<=', $request->fecha_fin);
+        }
+
+        if ($request->filled('estado')) {
+            $query->where('estado', $request->estado);
+        }
+
+        if ($request->filled('tramo')) {
+            $query->where('tramo', $request->tramo);
+        }
+
+        $rutasCortas = $query->orderBy('fecha', 'desc')->get();
+
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="rutas_cortas_' . now()->format('Y-m-d') . '.csv"'
+        ];
+
+        $callback = function() use ($rutasCortas) {
+            $file = fopen('php://output', 'w');
+
+            fputcsv($file, [
+                'Fecha', 'Conductor', 'Bus', 'Tramo', 'Origen', 'Destino',
+                'Hora Inicio', 'Hora Fin', 'Estado', 'Pasajeros', 'Ingresos',
+                'Calificación', 'Observaciones'
+            ]);
+
+            foreach ($rutasCortas as $ruta) {
+                fputcsv($file, [
+                    $ruta->fecha->format('Y-m-d'),
+                    $ruta->conductor ? $ruta->conductor->codigo_conductor : '',
+                    $ruta->bus ? $ruta->bus->numero_bus : '',
+                    $ruta->tramo,
+                    $ruta->origen,
+                    $ruta->destino,
+                    $ruta->hora_inicio ? $ruta->hora_inicio->format('H:i') : '',
+                    $ruta->hora_fin ? $ruta->hora_fin->format('H:i') : '',
+                    $ruta->estado,
+                    $ruta->pasajeros_transportados ?: 0,
+                    $ruta->ingreso_estimado ?: 0,
+                    $ruta->calificacion_servicio ?: '',
+                    $ruta->observaciones ?: ''
+                ]);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+
+    // API Methods
+    public function apiIndex(Request $request)
+    {
+        $query = RutaCorta::with(['conductor:id,codigo_conductor,nombre', 'bus:id,numero_bus']);
+
+        if ($request->filled('fecha')) {
+            $query->where('fecha', $request->fecha);
+        }
+
+        if ($request->filled('estado')) {
+            $query->where('estado', $request->estado);
+        }
+
+        $rutasCortas = $query->orderBy('hora_inicio')
+            ->paginate($request->get('per_page', 15));
+
+        return $this->paginatedResponse($rutasCortas);
+    }
+
+    public function apiEstadisticasHoy()
+    {
+        $estadisticas = RutaCorta::obtenerEstadisticasHoy();
+        return $this->successResponse($estadisticas);
     }
 }

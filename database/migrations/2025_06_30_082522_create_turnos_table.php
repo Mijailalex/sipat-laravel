@@ -11,16 +11,22 @@ return new class extends Migration
         Schema::create('turnos', function (Blueprint $table) {
             $table->id();
             $table->foreignId('plantilla_id')->constrained('plantillas')->onDelete('cascade');
-            $table->foreignId('conductor_id')->constrained('conductores')->onDelete('cascade');
-            $table->date('fecha_salida');
-            $table->string('numero_salida', 20);
-            $table->time('hora_salida');
-            $table->time('hora_llegada');
-            $table->string('codigo_bus', 20);
-            $table->enum('tipo_servicio', ['RUTERO', 'EXPRESS', 'NORMAL', 'ESPECIAL']);
-            $table->string('origen_destino', 100);
+            $table->foreignId('conductor_id')->nullable()->constrained('conductores')->onDelete('set null');
+            $table->date('fecha_turno');
+            $table->time('hora_inicio');
+            $table->time('hora_fin');
+            $table->string('tipo_turno', 50);
+            $table->string('ruta_asignada', 100)->nullable();
+            $table->string('origen_conductor', 100)->nullable();
             $table->enum('estado', ['PROGRAMADO', 'EN_CURSO', 'COMPLETADO', 'CANCELADO'])->default('PROGRAMADO');
+            $table->text('observaciones')->nullable();
+            $table->decimal('horas_trabajadas', 5, 2)->nullable();
+            $table->decimal('eficiencia_turno', 5, 2)->nullable();
             $table->timestamps();
+
+            $table->index(['fecha_turno', 'estado']);
+            $table->index(['conductor_id', 'fecha_turno']);
+            $table->unique(['conductor_id', 'fecha_turno', 'hora_inicio']);
         });
     }
 

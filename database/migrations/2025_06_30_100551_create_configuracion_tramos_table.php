@@ -10,14 +10,23 @@ return new class extends Migration
     {
         Schema::create('configuracion_tramos', function (Blueprint $table) {
             $table->id();
-            $table->string('tramo', 50)->unique(); // LIMA-ICA, ICA-LIMA, etc.
-            $table->enum('rumbo', ['NORTE', 'SUR']);
-            $table->decimal('duracion_horas', 4, 2); // Duración en horas
-            $table->boolean('es_ruta_corta')->default(true); // Configurable: corta o larga
-            $table->decimal('ingreso_base', 8, 2)->default(0); // Ingreso base del tramo
+            $table->string('codigo_tramo', 20)->unique();
+            $table->string('nombre', 200);
+            $table->string('origen', 200);
+            $table->string('destino', 200);
+            $table->decimal('distancia_km', 8, 2);
+            $table->decimal('tarifa_base', 8, 2);
+            $table->decimal('tarifa_maxima', 8, 2)->nullable();
+            $table->integer('tiempo_estimado_minutos');
+            $table->enum('tipo_servicio', ['URBANO', 'INTERURBANO', 'ESPECIAL'])->default('URBANO');
             $table->boolean('activo')->default(true);
+            $table->json('horarios_disponibles')->nullable();
+            $table->json('restricciones')->nullable();
             $table->text('descripcion')->nullable();
             $table->timestamps();
+
+            $table->index(['activo', 'tipo_servicio']);
+            $table->index('codigo_tramo');
         });
     }
 

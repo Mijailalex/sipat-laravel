@@ -10,20 +10,22 @@ return new class extends Migration
     {
         Schema::create('validaciones', function (Blueprint $table) {
             $table->id();
-            $table->string('tipo', 50);
             $table->foreignId('conductor_id')->constrained('conductores')->onDelete('cascade');
-            $table->text('mensaje');
-            $table->enum('severidad', ['CRITICA', 'ADVERTENCIA', 'INFO'])->default('INFO');
-            $table->enum('estado', ['PENDIENTE', 'RESUELTO', 'VERIFICADO', 'IGNORADO'])->default('PENDIENTE');
-            $table->timestamp('fecha_deteccion')->useCurrent();
-            $table->timestamp('fecha_resolucion')->nullable();
-            $table->string('resuelto_por', 100)->nullable();
-            $table->text('observaciones')->nullable();
+            $table->string('tipo', 50);
+            $table->enum('severidad', ['INFO', 'ADVERTENCIA', 'CRITICA'])->default('INFO');
+            $table->string('titulo', 200);
+            $table->text('descripcion');
+            $table->json('detalles_adicionales')->nullable();
+            $table->enum('estado', ['PENDIENTE', 'EN_PROCESO', 'RESUELTO', 'OMITIDO'])->default('PENDIENTE');
+            $table->text('accion_realizada')->nullable();
+            $table->foreignId('resuelto_por')->nullable()->constrained('users')->onDelete('set null');
+            $table->datetime('fecha_resolucion')->nullable();
+            $table->decimal('prioridad_calculada', 5, 2)->default(0.00);
             $table->timestamps();
 
-            $table->index(['conductor_id', 'estado']);
-            $table->index(['tipo', 'estado']);
-            $table->index(['severidad', 'estado']);
+            $table->index(['estado', 'severidad', 'prioridad_calculada']);
+            $table->index(['conductor_id', 'tipo']);
+            $table->index('created_at');
         });
     }
 
