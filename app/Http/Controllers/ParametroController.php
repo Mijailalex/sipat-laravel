@@ -10,47 +10,29 @@ class ParametroController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Parametro::with('modificadoPor:id,name');
+        $query = Parametro::visibles();
 
-        // Filtro por categoría
         if ($request->filled('categoria')) {
             $query->categoria($request->categoria);
         }
 
-        // Filtro por búsqueda
         if ($request->filled('buscar')) {
-            $buscar = $request->buscar;
-            $query->where(function ($q) use ($buscar) {
-                $q->where('nombre', 'like', "%{$buscar}%")
-                  ->orWhere('clave', 'like', "%{$buscar}%")
-                  ->orWhere('descripcion', 'like', "%{$buscar}%");
+            $query->where(function ($q) use ($request) {
+                $q->where('nombre', 'like', '%' . $request->buscar . '%')
+                  ->orWhere('clave', 'like', '%' . $request->buscar . '%')
+                  ->orWhere('descripcion', 'like', '%' . $request->buscar . '%');
             });
         }
 
-        // Solo mostrar parámetros visibles por defecto
-        if (!$request->filled('mostrar_ocultos')) {
-            $query->visibles();
-        }
+        $parametros = $query->ordenados()->get()->groupBy('categoria');
+        $categorias = Parametro::obtenerCategorias();
 
-        $parametros = $query->ordenados()->paginate(20);
-
-        // Obtener categorías para el filtro
-        $categorias = Parametro::distinct('categoria')->pluck('categoria')->sort();
-
-        // Agrupar parámetros por categoría para mejor visualización
-        $parametrosAgrupados = $parametros->getCollection()->groupBy('categoria');
-
-        return view('parametros.index', compact(
-            'parametros',
-            'parametrosAgrupados',
-            'categorias'
-        ));
+        return view('parametros.index', compact('parametros', 'categorias'));
     }
 
     public function show($id)
     {
-        $parametro = Parametro::with('modificadoPor')->findOrFail($id);
-
+        $parametro = Parametro::findOrFail($id);
         return view('parametros.show', compact('parametro'));
     }
 
@@ -58,117 +40,17 @@ class ParametroController extends Controller
     {
         $parametro = Parametro::findOrFail($id);
 
-        if (!$parametro->modificable) {
-            return $this->errorResponse('Este parámetro no puede ser modificado');
-        }
-
         $validated = $request->validate([
             'valor' => 'required'
         ]);
 
         try {
-            Parametro::establecerValor(
-                $parametro->clave,
-                $validated['valor'],
-                auth()->id()
-            );
+            Parametro::establecerValor($parametro->clave, $validated['valor'], auth()->id());
 
-            return $this->successResponse(
-                ['nuevo_valor' => $parametro->fresh()->valor_formateado],
-                'Parámetro actualizado exitosamente'
-            );
+            return back()->with('success', 'Parámetro actualizado exitosamente');
 
         } catch (\Exception $e) {
-            return $this->errorResponse('Error al actualizar parámetro: ' . $e->getMessage());
-        }
-    }
-
-    public function restaurarDefecto($id)
-    {
-        $parametro = Parametro::findOrFail($id);
-
-        try {
-            $parametro->restaurarValorDefecto();
-
-            return $this->successResponse(
-                ['nuevo_valor' => $parametro->fresh()->valor_formateado],
-                'Parámetro restaurado al valor por defecto'
-            );
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al restaurar parámetro: ' . $e->getMessage());
-        }
-    }
-
-    public function obtenerPorCategoria($categoria)
-    {
-        $parametros = Parametro::obtenerPorCategoria($categoria);
-
-        return $this->successResponse($parametros, 'Parámetros obtenidos exitosamente');
-    }
-
-    public function actualizarMasivo(Request $request)
-    {
-        $validated = $request->validate([
-            'parametros' => 'required|array',
-            'parametros.*.clave' => 'required|string',
-            'parametros.*.valor' => 'required'
-        ]);
-
-        $actualizados = 0;
-        $errores = [];
-
-        DB::beginTransaction();
-
-        try {
-            foreach ($validated['parametros'] as $param) {
-                try {
-                    Parametro::establecerValor(
-                        $param['clave'],
-                        $param['valor'],
-                        auth()->id()
-                    );
-                    $actualizados++;
-                } catch (\Exception $e) {
-                    $errores[] = "Parámetro {$param['clave']}: " . $e->getMessage();
-                }
-            }
-
-            if (empty($errores)) {
-                DB::commit();
-                return $this->successResponse(
-                    ['actualizados' => $actualizados],
-                    "Se actualizaron {$actualizados} parámetros exitosamente"
-                );
-            } else {
-                DB::rollback();
-                return $this->errorResponse(
-                    'Errores en la actualización masiva',
-                    $errores
-                );
-            }
-
-        } catch (\Exception $e) {
-            DB::rollback();
-            return $this->errorResponse('Error en actualización masiva: ' . $e->getMessage());
-        }
-    }
-
-    public function limpiarCache(Request $request)
-    {
-        try {
-            if ($request->filled('categoria')) {
-                Parametro::limpiarCache($request->categoria);
-                $mensaje = "Cache limpiado para la categoría {$request->categoria}";
-            } else {
-                Parametro::limpiarCache();
-                $mensaje = "Cache de parámetros limpiado completamente";
-            }
-
-            return $this->successResponse(null, $mensaje);
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al limpiar cache: ' . $e->getMessage());
+            return back()->with('error', 'Error al actualizar parámetro: ' . $e->getMessage());
         }
     }
 
@@ -300,6 +182,95 @@ class ParametroController extends Controller
         ], 'Validación de configuración completada');
     }
 
+    public function restaurarDefecto($id)
+    {
+        $parametro = Parametro::findOrFail($id);
+
+        try {
+            $parametro->restaurarValorDefecto();
+
+            return $this->successResponse(
+                ['nuevo_valor' => $parametro->fresh()->valor_formateado],
+                'Parámetro restaurado al valor por defecto'
+            );
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al restaurar parámetro: ' . $e->getMessage());
+        }
+    }
+
+    public function obtenerPorCategoria($categoria)
+    {
+        $parametros = Parametro::obtenerPorCategoria($categoria);
+
+        return $this->successResponse($parametros, 'Parámetros obtenidos exitosamente');
+    }
+
+    public function actualizarMasivo(Request $request)
+    {
+        $validated = $request->validate([
+            'parametros' => 'required|array',
+            'parametros.*.clave' => 'required|string',
+            'parametros.*.valor' => 'required'
+        ]);
+
+        $actualizados = 0;
+        $errores = [];
+
+        DB::beginTransaction();
+
+        try {
+            foreach ($validated['parametros'] as $param) {
+                try {
+                    Parametro::establecerValor(
+                        $param['clave'],
+                        $param['valor'],
+                        auth()->id()
+                    );
+                    $actualizados++;
+                } catch (\Exception $e) {
+                    $errores[] = "Parámetro {$param['clave']}: " . $e->getMessage();
+                }
+            }
+
+            if (empty($errores)) {
+                DB::commit();
+                return $this->successResponse(
+                    ['actualizados' => $actualizados],
+                    "Se actualizaron {$actualizados} parámetros exitosamente"
+                );
+            } else {
+                DB::rollback();
+                return $this->errorResponse(
+                    'Errores en la actualización masiva',
+                    $errores
+                );
+            }
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            return $this->errorResponse('Error en actualización masiva: ' . $e->getMessage());
+        }
+    }
+
+    public function limpiarCache(Request $request)
+    {
+        try {
+            if ($request->filled('categoria')) {
+                Parametro::limpiarCache($request->categoria);
+                $mensaje = "Cache limpiado para la categoría {$request->categoria}";
+            } else {
+                Parametro::limpiarCache();
+                $mensaje = "Cache de parámetros limpiado completamente";
+            }
+
+            return $this->successResponse(null, $mensaje);
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al limpiar cache: ' . $e->getMessage());
+        }
+    }
+
     public function obtenerHistorialCambios(Request $request)
     {
         $dias = $request->get('dias', 30);
@@ -370,5 +341,24 @@ class ParametroController extends Controller
         } catch (\Exception $e) {
             return $this->errorResponse('Error al establecer parámetro: ' . $e->getMessage());
         }
+    }
+
+    // Helper methods para respuestas API
+    protected function successResponse($data = null, $message = 'Operación exitosa')
+    {
+        return response()->json([
+            'success' => true,
+            'message' => $message,
+            'data' => $data
+        ]);
+    }
+
+    protected function errorResponse($message = 'Error en la operación', $errors = null, $status = 422)
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => $errors
+        ], $status);
     }
 }

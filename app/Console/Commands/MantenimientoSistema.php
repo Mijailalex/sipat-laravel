@@ -73,7 +73,11 @@ class MantenimientoSistema extends Command
             'conductores',
             'validaciones',
             'rutas_cortas',
-            'metricas_diarias'
+            'metricas_diarias',
+            'parametros',
+            'plantillas',
+            'turnos',
+            'buses'
         ];
 
         $optimizadas = 0;
@@ -103,8 +107,12 @@ class MantenimientoSistema extends Command
                 $archivos = glob($directorio . '/*');
                 foreach ($archivos as $archivo) {
                     if (is_file($archivo) && filemtime($archivo) < strtotime('-7 days')) {
-                        unlink($archivo);
-                        $eliminados++;
+                        try {
+                            unlink($archivo);
+                            $eliminados++;
+                        } catch (\Exception $e) {
+                            $this->warn("No se pudo eliminar: {$archivo}");
+                        }
                     }
                 }
             }
@@ -127,8 +135,30 @@ class MantenimientoSistema extends Command
                 $this->warn("   ⚠️ {$conductoresCriticos} conductores requieren descanso");
                 $problemas++;
             }
+
+            // Verificar validaciones pendientes críticas
+            $validacionesCriticas = \App\Models\Validacion::where('severidad', 'CRITICA')
+                ->where('estado', 'PENDIENTE')
+                ->count();
+
+            if ($validacionesCriticas > 0) {
+                $this->warn("   ⚠️ {$validacionesCriticas} validaciones críticas pendientes");
+                $problemas++;
+            }
+
+            // Verificar integridad de base de datos
+            $tablas = ['conductores', 'validaciones', 'rutas_cortas'];
+            foreach ($tablas as $tabla) {
+                try {
+                    \DB::select("CHECK TABLE {$tabla}");
+                } catch (\Exception $e) {
+                    $this->warn("   ⚠️ Error en la tabla {$tabla}: " . $e->getMessage());
+                    $problemas++;
+                }
+            }
+
         } catch (\Exception $e) {
-            $this->warn("   ⚠️ Error verificando conductores: " . $e->getMessage());
+            $this->warn("   ⚠️ Error verificando integridad: " . $e->getMessage());
             $problemas++;
         }
 

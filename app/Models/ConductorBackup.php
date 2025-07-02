@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Carbon\Carbon;
 
 class ConductorBackup extends Model
 {
@@ -26,7 +27,9 @@ class ConductorBackup extends Model
     protected $casts = [
         'datos_anteriores' => 'array',
         'datos_nuevos' => 'array',
-        'campos_modificados' => 'array'
+        'campos_modificados' => 'array',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime'
     ];
 
     // Relaciones
@@ -37,7 +40,7 @@ class ConductorBackup extends Model
 
     public function usuario()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(User::class, 'usuario_id');
     }
 
     // Scopes
@@ -46,64 +49,94 @@ class ConductorBackup extends Model
         return $query->where('accion', $accion);
     }
 
-    public function scopeConductor($query, $conductorId)
-    {
-        return $query->where('conductor_id', $conductorId);
-    }
-
-    public function scopeUsuario($query, $usuarioId)
-    {
-        return $query->where('usuario_id', $usuarioId);
-    }
-
     public function scopeRecientes($query, $dias = 30)
     {
         return $query->where('created_at', '>=', now()->subDays($dias));
     }
 
-    // Métodos de negocio
-    public function getAccionClaseAttribute()
+    // Métodos estáticos
+    public static function crearBackup($conductorId, $accion, $datosAnteriores = null, $datosNuevos = null, $razonCambio = null)
     {
-        return match($this->accion) {
-            'CREADO' => 'success',
-            'ACTUALIZADO' => 'warning',
-            'ELIMINADO' => 'danger',
-            default => 'info'
-        };
-    }
+        $camposModificados = [];
 
-    public function getAccionIconoAttribute()
-    {
-        return match($this->accion) {
-            'CREADO' => 'fa-plus',
-            'ACTUALIZADO' => 'fa-edit',
-            'ELIMINADO' => 'fa-trash',
-            default => 'fa-info'
-        };
-    }
-
-    public function getCambiosResumenAttribute()
-    {
-        if (!$this->campos_modificados) {
-            return 'Sin campos modificados';
+        if ($datosAnteriores && $datosNuevos) {
+            $camposModificados = array_keys(array_diff_assoc($datosNuevos, $datosAnteriores));
         }
 
-        $campos = collect($this->campos_modificados)->map(function ($campo) {
-            return ucfirst(str_replace('_', ' ', $campo));
-        });
-
-        return $campos->join(', ');
+        return static::create([
+            'conductor_id' => $conductorId,
+            'accion' => $accion,
+            'datos_anteriores' => $datosAnteriores,
+            'datos_nuevos' => $datosNuevos,
+            'campos_modificados' => $camposModificados,
+            'usuario_id' => auth()->id(),
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
+            'razon_cambio' => $razonCambio ?? "Acción: {$accion}"
+        ]);
     }
 
-    public function getDetallesCambiosAttribute()
+    public static function obtenerHistorialConductor($conductorId, $limite = 20)
     {
-        if (!$this->campos_modificados || !$this->datos_anteriores || !$this->datos_nuevos) {
+        return static::where('conductor_id', $conductorId)
+            ->with('usuario:id,name')
+            ->orderBy('created_at', 'desc')
+            ->limit($limite)
+            ->get()
+            ->map(function ($backup) {
+                return [
+                    'id' => $backup->id,
+                    'accion' => $backup->accion,
+                    'fecha' => $backup->created_at->format('Y-m-d H:i:s'),
+                    'hace' => $backup->created_at->diffForHumans(),
+                    'usuario' => $backup->usuario?->name ?? 'Sistema',
+                    'razon_cambio' => $backup->razon_cambio,
+                    'campos_modificados' => $backup->campos_modificados,
+                    'detalles_cambios' => $backup->obtenerDetallesCambios(),
+                    'puede_restaurar' => $backup->accion === 'ACTUALIZADO' && $backup->datos_anteriores
+                ];
+            });
+    }
+
+    public static function limpiarBackupsAntiguos($diasRetencion = 90)
+    {
+        $fechaLimite = now()->subDays($diasRetencion);
+
+        return static::where('created_at', '<', $fechaLimite)->delete();
+    }
+
+    public static function estadisticasBackups($dias = 30)
+    {
+        $fechaInicio = now()->subDays($dias);
+
+        return [
+            'total_backups' => static::where('created_at', '>=', $fechaInicio)->count(),
+            'por_accion' => static::where('created_at', '>=', $fechaInicio)
+                ->selectRaw('accion, COUNT(*) as total')
+                ->groupBy('accion')
+                ->pluck('total', 'accion')
+                ->toArray(),
+            'conductores_modificados' => static::where('created_at', '>=', $fechaInicio)
+                ->distinct('conductor_id')
+                ->count(),
+            'promedio_diario' => round(
+                static::where('created_at', '>=', $fechaInicio)->count() / $dias,
+                2
+            )
+        ];
+    }
+
+    // Métodos de instancia
+    public function obtenerDetallesCambios()
+    {
+        if (!$this->datos_anteriores || !$this->datos_nuevos) {
             return [];
         }
 
         $detalles = [];
+        $camposModificados = $this->campos_modificados ?? [];
 
-        foreach ($this->campos_modificados as $campo) {
+        foreach ($camposModificados as $campo) {
             $valorAnterior = $this->datos_anteriores[$campo] ?? null;
             $valorNuevo = $this->datos_nuevos[$campo] ?? null;
 
@@ -191,175 +224,28 @@ class ConductorBackup extends Model
         return true;
     }
 
-    public static function crearBackup($conductorId, $accion, $datosAnteriores = null, $datosNuevos = null, $razon = null)
+    public function puedeRestaurar()
     {
-        $camposModificados = [];
-
-        if ($datosAnteriores && $datosNuevos) {
-            foreach ($datosNuevos as $campo => $valor) {
-                if (!array_key_exists($campo, $datosAnteriores) ||
-                    $datosAnteriores[$campo] !== $valor) {
-                    $camposModificados[] = $campo;
-                }
-            }
-        }
-
-        return static::create([
-            'conductor_id' => $conductorId,
-            'accion' => $accion,
-            'datos_anteriores' => $datosAnteriores,
-            'datos_nuevos' => $datosNuevos,
-            'campos_modificados' => $camposModificados,
-            'usuario_id' => auth()->id(),
-            'ip_address' => request()->ip(),
-            'user_agent' => request()->userAgent(),
-            'razon_cambio' => $razon
-        ]);
+        return $this->accion === 'ACTUALIZADO'
+            && !is_null($this->datos_anteriores)
+            && !empty($this->datos_anteriores)
+            && $this->conductor()->exists();
     }
 
-    public static function obtenerHistorialConductor($conductorId, $limite = 50)
+    public function obtenerResumenCambio()
     {
-        return static::where('conductor_id', $conductorId)
-            ->with('usuario:id,name')
-            ->orderBy('created_at', 'desc')
-            ->limit($limite)
-            ->get();
-    }
-
-    public static function obtenerEstadisticasAuditoria($dias = 30)
-    {
-        $fecha_desde = now()->subDays($dias);
-
-        return [
-            'total_cambios' => static::where('created_at', '>=', $fecha_desde)->count(),
-            'por_accion' => static::where('created_at', '>=', $fecha_desde)
-                ->selectRaw('accion, COUNT(*) as cantidad')
-                ->groupBy('accion')
-                ->pluck('cantidad', 'accion')
-                ->toArray(),
-            'por_usuario' => static::where('created_at', '>=', $fecha_desde)
-                ->with('usuario:id,name')
-                ->get()
-                ->groupBy('usuario.name')
-                ->map(function ($grupo) {
-                    return $grupo->count();
-                })
-                ->toArray(),
-            'conductores_mas_modificados' => static::where('created_at', '>=', $fecha_desde)
-                ->selectRaw('conductor_id, COUNT(*) as modificaciones')
-                ->with('conductor:id,codigo_conductor,nombre,apellido')
-                ->groupBy('conductor_id')
-                ->orderBy('modificaciones', 'desc')
-                ->limit(10)
-                ->get(),
-            'campos_mas_modificados' => static::where('created_at', '>=', $fecha_desde)
-                ->whereNotNull('campos_modificados')
-                ->get()
-                ->pluck('campos_modificados')
-                ->flatten()
-                ->countBy()
-                ->sortDesc()
-                ->take(10)
-                ->toArray(),
-            'actividad_por_dia' => static::where('created_at', '>=', $fecha_desde)
-                ->selectRaw('DATE(created_at) as fecha, COUNT(*) as cambios')
-                ->groupBy('fecha')
-                ->orderBy('fecha')
-                ->pluck('cambios', 'fecha')
-                ->toArray()
-        ];
-    }
-
-    public static function limpiarBackupsAntiguos($diasRetencion = 90)
-    {
-        $fechaLimite = now()->subDays($diasRetencion);
-
-        $eliminados = static::where('created_at', '<', $fechaLimite)->count();
-
-        static::where('created_at', '<', $fechaLimite)->delete();
-
-        return $eliminados;
-    }
-
-    public static function exportarHistorialConductor($conductorId, $formato = 'json')
-    {
-        $historial = static::obtenerHistorialConductor($conductorId, 1000);
-
-        $datos = $historial->map(function ($backup) {
-            return [
-                'fecha' => $backup->created_at->format('Y-m-d H:i:s'),
-                'accion' => $backup->accion,
-                'usuario' => $backup->usuario->name ?? 'Sistema',
-                'campos_modificados' => $backup->campos_modificados,
-                'detalles_cambios' => $backup->detalles_cambios,
-                'razon' => $backup->razon_cambio,
-                'ip' => $backup->ip_address
-            ];
-        });
-
-        switch ($formato) {
-            case 'csv':
-                return static::generarCSV($datos);
-            case 'excel':
-                return static::generarExcel($datos);
+        switch ($this->accion) {
+            case 'CREADO':
+                return 'Conductor creado en el sistema';
+            case 'ACTUALIZADO':
+                $campos = count($this->campos_modificados ?? []);
+                return "Se modificaron {$campos} campos";
+            case 'ELIMINADO':
+                return 'Conductor eliminado del sistema';
+            case 'RESTAURADO':
+                return 'Se restauró una versión anterior';
             default:
-                return $datos->toJson(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+                return $this->razon_cambio ?? 'Acción desconocida';
         }
-    }
-
-    private static function generarCSV($datos)
-    {
-        $csv = "Fecha,Acción,Usuario,Campos Modificados,Razón,IP\n";
-
-        foreach ($datos as $registro) {
-            $csv .= sprintf(
-                "%s,%s,%s,\"%s\",%s,%s\n",
-                $registro['fecha'],
-                $registro['accion'],
-                $registro['usuario'],
-                implode('; ', $registro['campos_modificados'] ?? []),
-                $registro['razon'] ?? '',
-                $registro['ip'] ?? ''
-            );
-        }
-
-        return $csv;
-    }
-
-    public static function buscarCambios($criterios = [])
-    {
-        $query = static::query();
-
-        if (isset($criterios['conductor_id'])) {
-            $query->where('conductor_id', $criterios['conductor_id']);
-        }
-
-        if (isset($criterios['accion'])) {
-            $query->where('accion', $criterios['accion']);
-        }
-
-        if (isset($criterios['usuario_id'])) {
-            $query->where('usuario_id', $criterios['usuario_id']);
-        }
-
-        if (isset($criterios['campo'])) {
-            $query->whereJsonContains('campos_modificados', $criterios['campo']);
-        }
-
-        if (isset($criterios['fecha_desde'])) {
-            $query->where('created_at', '>=', $criterios['fecha_desde']);
-        }
-
-        if (isset($criterios['fecha_hasta'])) {
-            $query->where('created_at', '<=', $criterios['fecha_hasta']);
-        }
-
-        if (isset($criterios['ip_address'])) {
-            $query->where('ip_address', $criterios['ip_address']);
-        }
-
-        return $query->with(['conductor:id,codigo_conductor,nombre,apellido', 'usuario:id,name'])
-            ->orderBy('created_at', 'desc')
-            ->paginate($criterios['per_page'] ?? 50);
     }
 }
