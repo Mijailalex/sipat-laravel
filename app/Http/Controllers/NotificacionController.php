@@ -1,138 +1,53 @@
 <?php
+
 namespace App\Http\Controllers;
 
-use App\Models\Conductor;
 use App\Models\Notificacion;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class NotificacionController extends Controller
 {
-    /**
-     * Listar notificaciones de un conductor
-     */
-    public function index($conductorId)
+    public function index()
     {
-        $conductor = Conductor::findOrFail($conductorId);
+        $notificaciones = Notificacion::latest()
+            ->recientes()
+            ->paginate(20);
 
-        // Obtener notificaciones paginadas
-        $notificaciones = $conductor->notificaciones()
-            ->orderBy('created_at', 'desc')
-            ->paginate(10);
+        $noLeidas = Notificacion::noLeidas()->count();
 
-        return view('notificaciones.index', [
-            'conductor' => $conductor,
-            'notificaciones' => $notificaciones
+        return view('notificaciones.index', compact('notificaciones', 'noLeidas'));
+    }
+
+    public function marcarLeida(Notificacion $notificacion)
+    {
+        $notificacion->marcarComoLeida();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Notificación marcada como leída'
         ]);
     }
 
-    /**
-     * Marcar notificación como leída
-     */
-    public function marcarLeida($id)
+    public function marcarTodasLeidas()
     {
-        try {
-            $notificacion = Notificacion::findOrFail($id);
-            $notificacion->leida = true;
-            $notificacion->save();
+        Notificacion::noLeidas()->update(['leida_en' => now()]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Notificación marcada como leída'
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error al marcar notificación: ' . $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al marcar notificación'
-            ], 500);
-        }
+        return response()->json([
+            'success' => true,
+            'message' => 'Todas las notificaciones marcadas como leídas'
+        ]);
     }
 
-    /**
-     * Marcar todas las notificaciones como leídas
-     */
-    public function marcarTodasLeidas($conductorId)
+    public function obtenerNoLeidas()
     {
-        try {
-            $conductor = Conductor::findOrFail($conductorId);
-            $conductor->marcarTodasNotificacionesLeidas();
+        $notificaciones = Notificacion::noLeidas()
+            ->latest()
+            ->take(10)
+            ->get();
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Todas las notificaciones marcadas como leídas'
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error al marcar todas las notificaciones: ' . $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al marcar notificaciones'
-            ], 500);
-        }
-    }
-
-    /**
-     * Generar notificaciones de prueba
-     */
-    public function generarNotificacionesPrueba()
-    {
-        try {
-            // Obtener 10 conductores aleatorios
-            $conductores = Conductor::inRandomOrder()->limit(10)->get();
-            $notificacionesGeneradas = [];
-
-            foreach ($conductores as $conductor) {
-                $notificacion = Notificacion::create([
-                    'conductor_id' => $conductor->id,
-                    'tipo' => $this->generarTipoAleatorio(),
-                    'mensaje' => $this->generarMensajeAleatorio(),
-                    'leida' => false
-                ]);
-
-                $notificacionesGeneradas[] = $notificacion;
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Notificaciones de prueba generadas',
-                'notificaciones' => $notificacionesGeneradas
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error al generar notificaciones: ' . $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al generar notificaciones'
-            ], 500);
-        }
-    }
-
-    /**
-     * Métodos privados para generación aleatoria
-     */
-    private function generarTipoAleatorio()
-    {
-        $tipos = [
-            'FATIGA',
-            'PUNTUALIDAD',
-            'EFICIENCIA',
-            'RUTA_CRITICA',
-            'MANTENIMIENTO'
-        ];
-        return $tipos[array_rand($tipos)];
-    }
-
-    private function generarMensajeAleatorio()
-    {
-        $mensajes = [
-            'Alto riesgo de fatiga detectado',
-            'Rendimiento por debajo del estándar',
-            'Posible necesidad de descanso',
-            'Ruta crítica requiere atención inmediata',
-            'Verificar condiciones de trabajo'
-        ];
-        return $mensajes[array_rand($mensajes)];
+        return response()->json([
+            'notificaciones' => $notificaciones,
+            'total' => Notificacion::noLeidas()->count()
+        ]);
     }
 }

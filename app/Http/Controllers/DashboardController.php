@@ -2,116 +2,107 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Conductor;
 use App\Models\Validacion;
-use App\Models\Plantilla;
+use App\Models\RutaCorta;
+use App\Models\Notificacion;
 use App\Models\MetricaDiaria;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
     public function index()
     {
         // Métricas principales
-        $metricas = $this->calcularMetricas();
+        $metricas = $this->calcularMetricasPrincipales();
 
-        // Conductores por estado
-        $conductoresPorEstado = $this->obtenerConductoresPorEstado();
+        // Notificaciones recientes
+        $notificaciones = Notificacion::noLeidas()->latest()->take(5)->get();
 
-        // Validaciones pendientes
-        $validacionesPendientes = Validacion::with('conductor')
-            ->pendientes()
+        // Validaciones críticas
+        $validacionesCriticas = Validacion::where('severidad', 'CRITICA')
+            ->where('estado', 'PENDIENTE')
+            ->latest()
+            ->take(10)
+            ->get();
+
+        // Tendencias semanales
+        $tendencias = $this->calcularTendenciasSemanales();
+
+        // Conductores que requieren atención
+        $conductoresAtencion = Conductor::where('dias_acumulados', '>=', 5)
+            ->orWhere('eficiencia', '<', 80)
+            ->orWhere('puntualidad', '<', 85)
+            ->latest()
+            ->take(10)
+            ->get();
+
+        // Rutas cortas del día
+        $rutasHoy = RutaCorta::whereDate('created_at', today())
             ->latest()
             ->take(5)
             ->get();
 
-        // Conductores destacados
-        $conductoresDestacados = Conductor::select('*')
-            ->selectRaw('((puntualidad + eficiencia) / 2) as score_general')
-            ->orderByDesc('score_general')
-            ->take(5)
-            ->get();
-
-        // Tendencias semanales
-        $tendenciasSemanales = $this->obtenerTendenciasSemanales();
-
-        // Conductores críticos (6+ días trabajados)
-        $conductoresCriticos = Conductor::criticos()->count();
-
         return view('dashboard.index', compact(
             'metricas',
-            'conductoresPorEstado',
-            'validacionesPendientes',
-            'conductoresDestacados',
-            'tendenciasSemanales',
-            'conductoresCriticos'
+            'notificaciones',
+            'validacionesCriticas',
+            'tendencias',
+            'conductoresAtencion',
+            'rutasHoy'
         ));
     }
 
-private function calcularMetricas()
-{
-    $totalConductores = Conductor::count();
-    $conductoresActivos = Conductor::where('estado', 'DISPONIBLE')->count();
-    $validacionesPendientes = Validacion::where('estado', 'PENDIENTE')->count();
-    $validacionesCriticas = Validacion::where('estado', 'PENDIENTE')
-                                     ->where('severidad', 'CRITICA')
-                                     ->count();
-
-    // Calcular puntualidad promedio
-    $puntualidadPromedio = Conductor::avg('puntualidad') ?? 0;
-
-    // Calcular eficiencia promedio
-    $eficienciaPromedio = Conductor::avg('eficiencia') ?? 0;
-
-    // Simular cobertura de turnos (en producción vendría de cálculos reales)
-    $coberturaTurnos = 98.5;
-
-    return [
-        'total_conductores' => $totalConductores,
-        'conductores_activos' => $conductoresActivos,
-        'validaciones_pendientes' => $validacionesPendientes,
-        'validaciones_criticas' => $validacionesCriticas,
-        'puntualidad_promedio' => round($puntualidadPromedio, 1),
-        'eficiencia_promedio' => round($eficienciaPromedio, 1),
-        'cobertura_turnos' => $coberturaTurnos,
-        'cumplimiento_regimen' => 94.2,
-        'eficiencia_asignacion' => 96.8,
-    ];
-}
-
-    private function obtenerConductoresPorEstado()
+    public function obtenerMetricasEnTiempoReal()
     {
-        return Conductor::select('estado', DB::raw('count(*) as total'))
-            ->groupBy('estado')
-            ->pluck('total', 'estado')
-            ->toArray();
+        $metricas = $this->calcularMetricasPrincipales();
+
+        return response()->json([
+            'metricas' => $metricas,
+            'timestamp' => now()->format('H:i:s'),
+            'validaciones_pendientes' => Validacion::where('estado', 'PENDIENTE')->count(),
+            'notificaciones_nuevas' => Notificacion::noLeidas()->count()
+        ]);
     }
 
-    private function obtenerTendenciasSemanales()
+    private function calcularMetricasPrincipales()
     {
-        // Simular datos semanales (en producción vendría de métricas_diarias)
-        $dias = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
-        $cumplimiento = [95, 97, 94, 98, 96, 99, 97];
-        $eficiencia = [92, 94, 91, 96, 93, 97, 95];
+        $totalConductores = Conductor::count();
+        $conductoresDisponibles = Conductor::where('estado', 'DISPONIBLE')->count();
 
         return [
-            'dias' => $dias,
-            'cumplimiento' => $cumplimiento,
-            'eficiencia' => $eficiencia
+            'total_conductores' => $totalConductores,
+            'conductores_disponibles' => $conductoresDisponibles,
+            'conductores_descanso' => Conductor::where('estado', 'DESCANSO')->count(),
+            'conductores_criticos' => Conductor::where('dias_acumulados', '>=', 6)->count(),
+            'cobertura_turnos' => $totalConductores > 0 ? ($conductoresDisponibles / $totalConductores) * 100 : 0,
+            'validaciones_pendientes' => Validacion::where('estado', 'PENDIENTE')->count(),
+            'validaciones_criticas' => Validacion::where('severidad', 'CRITICA')->where('estado', 'PENDIENTE')->count(),
+            'rutas_cortas_hoy' => RutaCorta::whereDate('created_at', today())->count(),
+            'ingresos_estimados_hoy' => RutaCorta::whereDate('created_at', today())->sum('ingreso_estimado'),
+            'eficiencia_promedio' => Conductor::avg('eficiencia') ?? 0,
+            'puntualidad_promedio' => Conductor::avg('puntualidad') ?? 0
         ];
     }
 
-    public function getChartData()
+    private function calcularTendenciasSemanales()
     {
-        // API endpoint para gráficos dinámicos
-        $data = [
-            'conductores_por_estado' => $this->obtenerConductoresPorEstado(),
-            'tendencias' => $this->obtenerTendenciasSemanales(),
-            'metricas' => $this->calcularMetricas()
-        ];
+        $datos = [];
+        $fechas = [];
 
-        return response()->json($data);
+        for ($i = 6; $i >= 0; $i--) {
+            $fecha = Carbon::now()->subDays($i);
+            $fechas[] = $fecha->format('d/m');
+
+            $datos['validaciones'][] = Validacion::whereDate('created_at', $fecha)->count();
+            $datos['conductores_activos'][] = Conductor::where('estado', 'DISPONIBLE')->count();
+            $datos['rutas_cortas'][] = RutaCorta::whereDate('created_at', $fecha)->count();
+        }
+
+        return [
+            'labels' => $fechas,
+            'datasets' => $datos
+        ];
     }
 }

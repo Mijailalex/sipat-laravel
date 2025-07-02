@@ -98,3 +98,23 @@ Route::put('/conductor/{conductorId}/marcar-todas', [NotificacionController::cla
 Route::post('/generar-prueba', [NotificacionController::class, 'generarNotificacionesPrueba'])
      ->name('generar-prueba');
 });
+
+// Rutas de notificaciones
+Route::prefix('notificaciones')->group(function () {
+    Route::get('/', [NotificacionController::class, 'index'])->name('notificaciones.index');
+    Route::post('/{notificacion}/marcar-leida', [NotificacionController::class, 'marcarLeida'])->name('notificaciones.marcar-leida');
+    Route::post('/marcar-todas-leidas', [NotificacionController::class, 'marcarTodasLeidas'])->name('notificaciones.marcar-todas');
+    Route::get('/no-leidas', [NotificacionController::class, 'obtenerNoLeidas'])->name('notificaciones.no-leidas');
+});
+
+// Rutas de reportes avanzados
+Route::prefix('reportes-avanzados')->group(function () {
+    Route::get('/', [ReporteAvanzadoController::class, 'index'])->name('reportes-avanzados.index');
+    Route::get('/conductores', [ReporteAvanzadoController::class, 'conductoresDetallado'])->name('reportes-avanzados.conductores');
+    Route::get('/validaciones', [ReporteAvanzadoController::class, 'validacionesAnalisis'])->name('reportes-avanzados.validaciones');
+    Route::get('/eficiencia', [ReporteAvanzadoController::class, 'eficienciaOperacional'])->name('reportes-avanzados.eficiencia');
+    Route::get('/auditoria', [ReporteAvanzadoController::class, 'auditoriaActividad'])->name('reportes-avanzados.auditoria');
+});
+
+// Ruta para métricas en tiempo real
+Route::get('/dashboard/metricas-tiempo-real', [DashboardController::class, 'obtenerMetricasEnTiempoReal'])->name('dashboard.metricas-tiempo-real');

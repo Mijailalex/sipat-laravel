@@ -212,6 +212,21 @@
         </div>
     </div>
 
+    <!-- Agregar después de la línea de Parámetros -->
+<li class="nav-item">
+    <a class="nav-link {{ request()->is('notificaciones*') ? 'active' : '' }}" href="/notificaciones">
+        <i class="fas fa-bell"></i> Notificaciones
+        @if(isset($notificacionesCount) && $notificacionesCount > 0)
+            <span class="badge badge-danger">{{ $notificacionesCount }}</span>
+        @endif
+    </a>
+</li>
+<li class="nav-item">
+    <a class="nav-link {{ request()->is('reportes-avanzados*') ? 'active' : '' }}" href="/reportes-avanzados">
+        <i class="fas fa-chart-bar"></i> Reportes Avanzados
+    </a>
+</li>
+
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- SweetAlert2 -->
