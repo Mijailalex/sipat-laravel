@@ -16,7 +16,28 @@ class ReporteController extends Controller
 {
     public function index()
     {
-        return view('reportes.index');
+        // SOLUCIÓN: Agregar las métricas que faltan para la vista
+        $metricas = [
+            'conductores_total' => Conductor::count(),
+            'conductores_activos' => Conductor::where('estado', 'DISPONIBLE')->count(),
+            'conductores_descanso' => Conductor::whereIn('estado', ['DESCANSO_FISICO', 'DESCANSO_SEMANAL'])->count(),
+            'validaciones_pendientes' => Validacion::where('estado', 'PENDIENTE')->count(),
+            'validaciones_criticas' => Validacion::where('estado', 'PENDIENTE')
+                ->where('severidad', 'CRITICA')->count(),
+            'rutas_mes_actual' => RutaCorta::where('fecha', '>=', now()->startOfMonth())->count(),
+            'rutas_completadas_mes' => RutaCorta::where('fecha', '>=', now()->startOfMonth())
+                ->where('estado', 'COMPLETADA')->count(),
+            'ingresos_mes_actual' => RutaCorta::where('fecha', '>=', now()->startOfMonth())
+                ->where('estado', 'COMPLETADA')
+                ->sum('ingreso_estimado') ?? 0,
+            'pasajeros_mes_actual' => RutaCorta::where('fecha', '>=', now()->startOfMonth())
+                ->where('estado', 'COMPLETADA')
+                ->sum('pasajeros_transportados') ?? 0,
+            'eficiencia_promedio' => Conductor::avg('eficiencia') ?? 0,
+            'puntualidad_promedio' => Conductor::avg('puntualidad') ?? 0
+        ];
+
+        return view('reportes.index', compact('metricas'));
     }
 
     public function conductores(Request $request)
@@ -65,29 +86,42 @@ class ReporteController extends Controller
                         round(($rutasPeriodo->where('estado', 'COMPLETADA')->count() / $rutasPeriodo->count()) * 100, 2) : 0,
                     'turnos_total' => $turnosPeriodo->count(),
                     'turnos_completados' => $turnosPeriodo->where('estado', 'COMPLETADO')->count(),
-                    'validaciones_generadas' => $validacionesPeriodo->count(),
-                    'validaciones_criticas' => $validacionesPeriodo->where('severidad', 'CRITICA')->count(),
                     'total_pasajeros' => $rutasPeriodo->where('estado', 'COMPLETADA')->sum('pasajeros_transportados'),
                     'total_ingresos' => $rutasPeriodo->where('estado', 'COMPLETADA')->sum('ingreso_estimado'),
-                    'promedio_calificacion' => $rutasPeriodo->where('estado', 'COMPLETADA')
-                        ->whereNotNull('calificacion_servicio')->avg('calificacion_servicio') ?: 0
+                    'promedio_calificacion' => $rutasPeriodo->where('estado', 'COMPLETADA')->avg('calificacion_servicio') ?? 0,
+                    'validaciones_generadas' => $validacionesPeriodo->count(),
+                    'validaciones_criticas' => $validacionesPeriodo->where('severidad', 'CRITICA')->count()
                 ]
             ];
         });
 
+        // Estadísticas generales del reporte
+        $estadisticas = [
+            'total_conductores' => $reporte->count(),
+            'conductores_con_rutas' => $reporte->where('metricas.rutas_total', '>', 0)->count(),
+            'total_rutas' => $reporte->sum('metricas.rutas_total'),
+            'total_rutas_completadas' => $reporte->sum('metricas.rutas_completadas'),
+            'total_pasajeros' => $reporte->sum('metricas.total_pasajeros'),
+            'total_ingresos' => $reporte->sum('metricas.total_ingresos'),
+            'eficiencia_promedio' => $reporte->avg('metricas.eficiencia_rutas'),
+            'validaciones_totales' => $reporte->sum('metricas.validaciones_generadas'),
+            'validaciones_criticas_totales' => $reporte->sum('metricas.validaciones_criticas')
+        ];
+
         $formato = $validated['formato'] ?? 'html';
 
-        switch ($formato) {
-            case 'pdf':
-                return $this->generarPDFConductores($reporte, $validated);
-            case 'excel':
-                return $this->generarExcelConductores($reporte, $validated);
-            default:
-                return view('reportes.conductores', compact('reporte', 'validated'));
+        if ($formato === 'pdf') {
+            return $this->generarPDFConductores($reporte, $validated);
         }
+
+        if ($formato === 'excel') {
+            return $this->generarExcelConductores($reporte, $validated);
+        }
+
+        return view('reportes.conductores', compact('reporte', 'estadisticas', 'validated'));
     }
 
-    public function rutasCortas(Request $request)
+    public function operativo(Request $request)
     {
         $validated = $request->validate([
             'fecha_inicio' => 'required|date',
@@ -97,7 +131,7 @@ class ReporteController extends Controller
             'formato' => 'nullable|in:html,pdf,excel'
         ]);
 
-        $query = RutaCorta::with(['conductor', 'bus', 'configuracionTramo']);
+        $query = RutaCorta::with(['conductor', 'bus']);
 
         // Filtros
         $query->whereBetween('fecha', [$validated['fecha_inicio'], $validated['fecha_fin']]);
@@ -112,30 +146,31 @@ class ReporteController extends Controller
 
         $rutas = $query->orderBy('fecha', 'desc')->get();
 
-        // Estadísticas generales
+        // Estadísticas del reporte
         $estadisticas = [
             'total_rutas' => $rutas->count(),
-            'completadas' => $rutas->where('estado', 'COMPLETADA')->count(),
-            'canceladas' => $rutas->where('estado', 'CANCELADA')->count(),
-            'en_curso' => $rutas->where('estado', 'EN_CURSO')->count(),
+            'rutas_completadas' => $rutas->where('estado', 'COMPLETADA')->count(),
+            'rutas_canceladas' => $rutas->where('estado', 'CANCELADA')->count(),
+            'rutas_pendientes' => $rutas->where('estado', 'PROGRAMADA')->count(),
             'total_pasajeros' => $rutas->where('estado', 'COMPLETADA')->sum('pasajeros_transportados'),
             'total_ingresos' => $rutas->where('estado', 'COMPLETADA')->sum('ingreso_estimado'),
-            'promedio_pasajeros' => $rutas->where('estado', 'COMPLETADA')->avg('pasajeros_transportados') ?: 0,
-            'promedio_ingresos' => $rutas->where('estado', 'COMPLETADA')->avg('ingreso_estimado') ?: 0,
+            'promedio_pasajeros' => $rutas->where('estado', 'COMPLETADA')->avg('pasajeros_transportados') ?? 0,
+            'promedio_ingresos' => $rutas->where('estado', 'COMPLETADA')->avg('ingreso_estimado') ?? 0,
             'eficiencia_general' => $rutas->count() > 0 ?
                 round(($rutas->where('estado', 'COMPLETADA')->count() / $rutas->count()) * 100, 2) : 0
         ];
 
         $formato = $validated['formato'] ?? 'html';
 
-        switch ($formato) {
-            case 'pdf':
-                return $this->generarPDFRutas($rutas, $estadisticas, $validated);
-            case 'excel':
-                return $this->generarExcelRutas($rutas, $estadisticas, $validated);
-            default:
-                return view('reportes.rutas-cortas', compact('rutas', 'estadisticas', 'validated'));
+        if ($formato === 'pdf') {
+            return $this->generarPDFRutas($rutas, $estadisticas, $validated);
         }
+
+        if ($formato === 'excel') {
+            return $this->generarExcelRutas($rutas, $estadisticas, $validated);
+        }
+
+        return view('reportes.operativo', compact('rutas', 'estadisticas', 'validated'));
     }
 
     public function validaciones(Request $request)
@@ -143,42 +178,44 @@ class ReporteController extends Controller
         $validated = $request->validate([
             'fecha_inicio' => 'required|date',
             'fecha_fin' => 'required|date|after_or_equal:fecha_inicio',
-            'severidad' => 'nullable|in:INFO,ADVERTENCIA,CRITICA',
-            'tipo' => 'nullable|string',
-            'estado' => 'nullable|in:PENDIENTE,EN_PROCESO,RESUELTO,OMITIDO',
+            'estado' => 'nullable|in:PENDIENTE,RESUELTO,IGNORADO',
+            'severidad' => 'nullable|in:CRITICA,ADVERTENCIA,INFO',
+            'conductor_id' => 'nullable|exists:conductores,id',
             'formato' => 'nullable|in:html,pdf,excel'
         ]);
 
-        $query = Validacion::with(['conductor', 'resueltoBy']);
+        $query = Validacion::with('conductor');
 
         // Filtros
-        $query->whereBetween('created_at', [$validated['fecha_inicio'], $validated['fecha_fin'] . ' 23:59:59']);
+        $query->whereBetween('created_at', [$validated['fecha_inicio'], $validated['fecha_fin']]);
+
+        if ($validated['estado']) {
+            $query->where('estado', $validated['estado']);
+        }
 
         if ($validated['severidad']) {
             $query->where('severidad', $validated['severidad']);
         }
 
-        if ($validated['tipo']) {
-            $query->where('tipo', $validated['tipo']);
-        }
-
-        if ($validated['estado']) {
-            $query->where('estado', $validated['estado']);
+        if ($validated['conductor_id']) {
+            $query->where('conductor_id', $validated['conductor_id']);
         }
 
         $validaciones = $query->orderBy('created_at', 'desc')->get();
 
         // Estadísticas
         $estadisticas = [
-            'total' => $validaciones->count(),
+            'total_validaciones' => $validaciones->count(),
             'pendientes' => $validaciones->where('estado', 'PENDIENTE')->count(),
             'resueltas' => $validaciones->where('estado', 'RESUELTO')->count(),
+            'ignoradas' => $validaciones->where('estado', 'IGNORADO')->count(),
             'criticas' => $validaciones->where('severidad', 'CRITICA')->count(),
-            'por_tipo' => $validaciones->groupBy('tipo')->map->count(),
-            'tiempo_promedio_resolucion' => $validaciones->where('estado', 'RESUELTO')
-                ->avg(function ($v) {
-                    return $v->created_at->diffInHours($v->fecha_resolucion);
-                }) ?: 0
+            'advertencias' => $validaciones->where('severidad', 'ADVERTENCIA')->count(),
+            'informativas' => $validaciones->where('severidad', 'INFO')->count(),
+            'conductores_afectados' => $validaciones->pluck('conductor_id')->unique()->count(),
+            'tiempo_promedio_resolucion' => $this->calcularTiempoPromedioResolucion($validaciones),
+            'porcentaje_resolucion' => $validaciones->count() > 0 ?
+                round(($validaciones->where('estado', 'RESUELTO')->count() / $validaciones->count()) * 100, 2) : 0
         ];
 
         $formato = $validated['formato'] ?? 'html';
@@ -238,37 +275,30 @@ class ReporteController extends Controller
             ];
         })->sortByDesc('ingreso_total');
 
-        return view('reportes.balance-tramos', compact('resumen', 'validated'));
+        return view('reportes.balance-tramos', compact('balance', 'resumen', 'validated'));
     }
 
     public function subempresas(Request $request)
     {
         $validated = $request->validate([
             'fecha_inicio' => 'required|date',
-            'fecha_fin' => 'required|date|after_or_equal:fecha_inicio',
-            'subempresa' => 'nullable|string'
+            'fecha_fin' => 'required|date|after_or_equal:fecha_inicio'
         ]);
 
-        $query = SubempresaAsignacion::with(['frecuencia', 'conductor', 'bus']);
+        // Obtener rutas por subempresa
+        $rutasPorSubempresa = RutaCorta::with('conductor')
+            ->whereBetween('fecha', [$validated['fecha_inicio'], $validated['fecha_fin']])
+            ->get()
+            ->groupBy('conductor.subempresa');
 
-        $query->whereBetween('fecha_asignacion', [$validated['fecha_inicio'], $validated['fecha_fin']]);
-
-        if ($validated['subempresa']) {
-            $query->subempresa($validated['subempresa']);
-        }
-
-        $asignaciones = $query->get();
-
-        // Generar reporte por subempresa
-        $reporte = $asignaciones->groupBy('frecuencia.nombre_subempresa')->map(function ($grupo, $subempresa) {
-            $completadas = $grupo->where('estado', 'COMPLETADO');
-
+        // Calcular métricas por subempresa
+        $reporte = $rutasPorSubempresa->map(function ($grupo, $subempresa) {
+            $completadas = $grupo->where('estado', 'COMPLETADA');
             return [
-                'nombre' => $subempresa,
-                'total_asignaciones' => $grupo->count(),
-                'completadas' => $completadas->count(),
-                'canceladas' => $grupo->where('estado', 'CANCELADO')->count(),
-                'eficiencia' => $grupo->count() > 0 ?
+                'subempresa' => $subempresa ?: 'Sin asignar',
+                'total_rutas' => $grupo->count(),
+                'rutas_completadas' => $completadas->count(),
+                'porcentaje_exito' => $grupo->count() > 0 ?
                     round(($completadas->count() / $grupo->count()) * 100, 2) : 0,
                 'total_pasajeros' => $completadas->sum('pasajeros_transportados'),
                 'total_ingresos' => $completadas->sum('ingresos_generados'),
@@ -402,18 +432,18 @@ class ReporteController extends Controller
             foreach ($rutas as $ruta) {
                 fputcsv($file, [
                     $ruta->fecha->format('Y-m-d'),
-                    $ruta->conductor ? $ruta->conductor->codigo_conductor : 'Sin conductor',
-                    $ruta->bus ? $ruta->bus->numero_bus : 'Sin bus',
+                    $ruta->conductor ? $ruta->conductor->nombre_completo : 'Sin asignar',
+                    $ruta->bus ? $ruta->bus->numero_bus : 'Sin asignar',
                     $ruta->tramo,
                     $ruta->origen,
                     $ruta->destino,
                     $ruta->hora_inicio ? $ruta->hora_inicio->format('H:i') : '',
                     $ruta->hora_fin ? $ruta->hora_fin->format('H:i') : '',
                     $ruta->estado,
-                    $ruta->pasajeros_transportados ?: 0,
-                    number_format($ruta->ingreso_estimado ?: 0, 2),
-                    $ruta->calificacion_servicio ?: '',
-                    $ruta->duracion_minutos ?: ''
+                    $ruta->pasajeros_transportados ?? 0,
+                    number_format($ruta->ingreso_estimado ?? 0, 2),
+                    $ruta->calificacion_servicio ?? '',
+                    $ruta->duracion_minutos ?? 0
                 ]);
             }
 
@@ -423,31 +453,16 @@ class ReporteController extends Controller
         return response()->stream($callback, 200, $headers);
     }
 
-    // API Methods
-    public function apiResumenEjecutivo(Request $request)
+    // Método auxiliar para calcular tiempo promedio de resolución
+    private function calcularTiempoPromedioResolucion($validaciones)
     {
-        $dias = $request->get('dias', 30);
+        $resueltas = $validaciones->whereNotNull('fecha_resolucion');
+        if ($resueltas->isEmpty()) return 0;
 
-        $resumen = [
-            'conductores_activos' => Conductor::disponibles()->count(),
-            'rutas_completadas_periodo' => RutaCorta::where('fecha', '>=', now()->subDays($dias))
-                ->where('estado', 'COMPLETADA')->count(),
-            'ingresos_periodo' => RutaCorta::where('fecha', '>=', now()->subDays($dias))
-                ->where('estado', 'COMPLETADA')->sum('ingreso_estimado'),
-            'validaciones_pendientes' => Validacion::pendientes()->count(),
-            'eficiencia_sistema' => MetricaDiaria::where('fecha', '>=', now()->subDays(7))
-                ->avg('eficiencia_promedio')
-        ];
+        $tiempos = $resueltas->map(function($validacion) {
+            return $validacion->created_at->diffInHours($validacion->fecha_resolucion);
+        });
 
-        return $this->successResponse($resumen);
-    }
-
-    public function apiTendenciasKPI(Request $request)
-    {
-        $dias = $request->get('dias', 30);
-
-        $kpis = BalanceRutasCortas::obtenerIndicadoresKPI($dias);
-
-        return $this->successResponse($kpis);
+        return round($tiempos->avg(), 2);
     }
 }

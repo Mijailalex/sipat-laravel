@@ -55,6 +55,11 @@ return [
         App\Providers\BroadcastServiceProvider::class,
         App\Providers\EventServiceProvider::class,
         App\Providers\RouteServiceProvider::class,
+
+        /*
+         * SIPAT Custom Service Provider
+         */
+        App\Providers\SipatServiceProvider::class,
     ],
 
     'aliases' => Facade::defaultAliases()->merge([

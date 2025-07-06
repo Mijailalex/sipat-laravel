@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class Parametro extends Model
 {
@@ -34,227 +36,197 @@ class Parametro extends Model
         'orden_visualizacion' => 'integer'
     ];
 
-    // Relaciones
+    protected $appends = ['valor_formateado'];
+
+    const TIPO_STRING = 'STRING';
+    const TIPO_INTEGER = 'INTEGER';
+    const TIPO_DECIMAL = 'DECIMAL';
+    const TIPO_BOOLEAN = 'BOOLEAN';
+    const TIPO_JSON = 'JSON';
+    const TIPO_DATE = 'DATE';
+    const TIPO_TIME = 'TIME';
+
     public function modificadoPor()
     {
-        return $this->belongsTo(User::class, 'modificado_por');
+        return $this->belongsTo(\App\Models\User::class, 'modificado_por');
     }
 
-    // Scopes
+    public function scopeVisible($query)
+    {
+        return $query->where('visible_interfaz', true);
+    }
+
+    public function scopeModificable($query)
+    {
+        return $query->where('modificable', true);
+    }
+
     public function scopeCategoria($query, $categoria)
     {
         return $query->where('categoria', $categoria);
     }
 
-    public function scopeVisibles($query)
-    {
-        return $query->where('visible_interfaz', true);
-    }
-
-    public function scopeModificables($query)
-    {
-        return $query->where('modificable', true);
-    }
-
-    public function scopeOrdenados($query)
+    public function scopeOrdenado($query)
     {
         return $query->orderBy('categoria')
                     ->orderBy('orden_visualizacion')
                     ->orderBy('nombre');
     }
 
-    // Métodos estáticos para gestión de parámetros
-    public static function obtenerValor($clave, $default = null)
+    public function getValorFormateadoAttribute()
+    {
+        return $this->formatearValor($this->valor, $this->tipo);
+    }
+
+    public function getValorConvertidoAttribute()
+    {
+        return $this->convertirValor($this->valor, $this->tipo);
+    }
+
+    public static function obtenerValor($clave, $defecto = null)
     {
         $cacheKey = "parametro_{$clave}";
 
-        return Cache::remember($cacheKey, 3600, function () use ($clave, $default) {
+        return Cache::remember($cacheKey, 3600, function () use ($clave, $defecto) {
             $parametro = static::where('clave', $clave)->first();
 
             if (!$parametro) {
-                return $default;
+                Log::warning("Parámetro no encontrado: {$clave}");
+                return $defecto;
             }
 
-            return static::convertirValor($parametro->valor, $parametro->tipo);
+            return $parametro->valor_convertido;
         });
     }
 
-    public static function establecerValor($clave, $valor, $usuario_id = null)
+    public static function establecerValor($clave, $valor, $usuarioId = null)
     {
         $parametro = static::where('clave', $clave)->first();
 
         if (!$parametro) {
-            throw new \Exception("Parámetro '{$clave}' no encontrado");
+            throw new \Exception("Parámetro no encontrado: {$clave}");
         }
 
         if (!$parametro->modificable) {
-            throw new \Exception("Parámetro '{$clave}' no es modificable");
+            throw new \Exception("El parámetro {$clave} no es modificable");
         }
 
-        // Validar el valor
-        $valorValidado = static::validarValor($valor, $parametro);
+        static::validarValor($valor, $parametro->tipo, $parametro->opciones);
 
-        // Actualizar
         $parametro->update([
-            'valor' => $valorValidado,
-            'modificado_por' => $usuario_id ?? auth()->id()
+            'valor' => $valor,
+            'modificado_por' => $usuarioId,
+            'updated_at' => now()
         ]);
 
-        // Limpiar cache
         Cache::forget("parametro_{$clave}");
 
-        return true;
+        Log::info("Parámetro actualizado: {$clave} = {$valor}", [
+            'usuario_id' => $usuarioId,
+            'valor_anterior' => $parametro->getOriginal('valor')
+        ]);
+
+        return $parametro->fresh();
     }
 
-    public static function obtenerPorCategoria($categoria)
+    public static function validarValor($valor, $tipo, $opciones = null)
     {
-        $cacheKey = "parametros_categoria_{$categoria}";
-
-        return Cache::remember($cacheKey, 3600, function () use ($categoria) {
-            return static::categoria($categoria)
-                ->visibles()
-                ->ordenados()
-                ->get()
-                ->mapWithKeys(function ($parametro) {
-                    return [
-                        $parametro->clave => [
-                            'valor' => static::convertirValor($parametro->valor, $parametro->tipo),
-                            'nombre' => $parametro->nombre,
-                            'descripcion' => $parametro->descripcion,
-                            'tipo' => $parametro->tipo,
-                            'opciones' => $parametro->opciones,
-                            'modificable' => $parametro->modificable
-                        ]
-                    ];
-                });
-        });
-    }
-
-    public static function limpiarCache($categoria = null)
-    {
-        if ($categoria) {
-            Cache::forget("parametros_categoria_{$categoria}");
-
-            // Limpiar parámetros individuales de la categoría
-            static::categoria($categoria)->get()->each(function ($parametro) {
-                Cache::forget("parametro_{$parametro->clave}");
-            });
-        } else {
-            // Limpiar todo el cache de parámetros
-            static::all()->each(function ($parametro) {
-                Cache::forget("parametro_{$parametro->clave}");
-                Cache::forget("parametros_categoria_{$parametro->categoria}");
-            });
+        if ($opciones && !in_array($valor, $opciones)) {
+            throw new \Exception("El valor '{$valor}' no está en las opciones válidas: " . implode(', ', $opciones));
         }
-    }
 
-    private static function convertirValor($valor, $tipo)
-    {
-        return match($tipo) {
-            'INTEGER' => (int) $valor,
-            'DECIMAL' => (float) $valor,
-            'BOOLEAN' => filter_var($valor, FILTER_VALIDATE_BOOLEAN),
-            'JSON' => json_decode($valor, true),
-            'DATE' => \Carbon\Carbon::parse($valor),
-            'TIME' => \Carbon\Carbon::parse($valor),
-            default => $valor
-        };
-    }
-
-    private static function validarValor($valor, $parametro)
-    {
-        // Validar tipo
-        switch ($parametro->tipo) {
-            case 'INTEGER':
-                if (!is_numeric($valor) || !is_int($valor + 0)) {
+        switch ($tipo) {
+            case self::TIPO_INTEGER:
+                if (!is_numeric($valor) || intval($valor) != $valor) {
                     throw new \Exception("El valor debe ser un número entero");
                 }
                 break;
 
-            case 'DECIMAL':
+            case self::TIPO_DECIMAL:
                 if (!is_numeric($valor)) {
                     throw new \Exception("El valor debe ser un número decimal");
                 }
                 break;
 
-            case 'BOOLEAN':
-                if (!in_array(strtolower($valor), ['true', 'false', '1', '0', 'yes', 'no'])) {
+            case self::TIPO_BOOLEAN:
+                if (!in_array(strtolower($valor), ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])) {
                     throw new \Exception("El valor debe ser verdadero o falso");
                 }
-                $valor = filter_var($valor, FILTER_VALIDATE_BOOLEAN) ? 'true' : 'false';
                 break;
 
-            case 'JSON':
-                if (is_string($valor)) {
-                    json_decode($valor);
-                    if (json_last_error() !== JSON_ERROR_NONE) {
-                        throw new \Exception("El valor debe ser un JSON válido");
-                    }
-                } else {
-                    $valor = json_encode($valor);
+            case self::TIPO_JSON:
+                json_decode($valor);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    throw new \Exception("El valor debe ser JSON válido: " . json_last_error_msg());
                 }
                 break;
 
-            case 'DATE':
+            case self::TIPO_DATE:
                 try {
-                    \Carbon\Carbon::parse($valor);
+                    Carbon::parse($valor);
                 } catch (\Exception $e) {
                     throw new \Exception("El valor debe ser una fecha válida");
                 }
                 break;
 
-            case 'TIME':
-                try {
-                    \Carbon\Carbon::parse($valor);
-                } catch (\Exception $e) {
-                    throw new \Exception("El valor debe ser una hora válida");
+            case self::TIPO_TIME:
+                if (!preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/', $valor)) {
+                    throw new \Exception("El valor debe ser una hora válida (HH:MM o HH:MM:SS)");
                 }
                 break;
         }
 
-        // Validar opciones
-        if ($parametro->opciones && !in_array($valor, $parametro->opciones)) {
-            throw new \Exception("El valor debe ser una de las opciones válidas: " .
-                implode(', ', $parametro->opciones));
-        }
-
-        // Validaciones adicionales
-        if ($parametro->validaciones) {
-            foreach ($parametro->validaciones as $regla => $valorRegla) {
-                switch ($regla) {
-                    case 'min':
-                        if (is_numeric($valor) && $valor < $valorRegla) {
-                            throw new \Exception("El valor mínimo es {$valorRegla}");
-                        }
-                        break;
-
-                    case 'max':
-                        if (is_numeric($valor) && $valor > $valorRegla) {
-                            throw new \Exception("El valor máximo es {$valorRegla}");
-                        }
-                        break;
-
-                    case 'min_length':
-                        if (strlen($valor) < $valorRegla) {
-                            throw new \Exception("La longitud mínima es {$valorRegla} caracteres");
-                        }
-                        break;
-
-                    case 'max_length':
-                        if (strlen($valor) > $valorRegla) {
-                            throw new \Exception("La longitud máxima es {$valorRegla} caracteres");
-                        }
-                        break;
-                }
-            }
-        }
-
-        return $valor;
+        return true;
     }
 
-    public function getValorFormateadoAttribute()
+    public static function convertirValor($valor, $tipo)
     {
-        return static::convertirValor($this->valor, $this->tipo);
+        switch ($tipo) {
+            case self::TIPO_INTEGER:
+                return (int) $valor;
+            case self::TIPO_DECIMAL:
+                return (float) $valor;
+            case self::TIPO_BOOLEAN:
+                return in_array(strtolower($valor), ['true', '1', 'yes', 'on']);
+            case self::TIPO_JSON:
+                return json_decode($valor, true);
+            case self::TIPO_DATE:
+                return Carbon::parse($valor);
+            case self::TIPO_TIME:
+                return Carbon::createFromFormat('H:i:s', strlen($valor) === 5 ? $valor . ':00' : $valor);
+            default:
+                return (string) $valor;
+        }
+    }
+
+    public function formatearValor($valor, $tipo)
+    {
+        switch ($tipo) {
+            case self::TIPO_BOOLEAN:
+                return $this->convertirValor($valor, $tipo) ? 'Verdadero' : 'Falso';
+            case self::TIPO_DATE:
+                try {
+                    return $this->convertirValor($valor, $tipo)->format('d/m/Y');
+                } catch (\Exception $e) {
+                    return $valor;
+                }
+            case self::TIPO_TIME:
+                try {
+                    return $this->convertirValor($valor, $tipo)->format('H:i');
+                } catch (\Exception $e) {
+                    return $valor;
+                }
+            case self::TIPO_JSON:
+                try {
+                    return json_encode($this->convertirValor($valor, $tipo), JSON_PRETTY_PRINT);
+                } catch (\Exception $e) {
+                    return $valor;
+                }
+            case self::TIPO_DECIMAL:
+                return number_format((float) $valor, 2);
+            default:
+                return $valor;
+        }
     }
 
     public function restaurarValorDefecto()
@@ -269,18 +241,80 @@ class Parametro extends Model
         ]);
 
         Cache::forget("parametro_{$this->clave}");
-        Cache::forget("parametros_categoria_{$this->categoria}");
+        return $this;
+    }
 
-        return true;
+    public function esValorDefecto()
+    {
+        return $this->valor === $this->valor_por_defecto;
+    }
+
+    public function tieneOpciones()
+    {
+        return !empty($this->opciones);
+    }
+
+    public function validarValorActual()
+    {
+        try {
+            static::validarValor($this->valor, $this->tipo, $this->opciones);
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    public static function exportarConfiguracion()
+    {
+        $parametros = static::ordenado()->get();
+        $configuracion = [];
+
+        foreach ($parametros as $parametro) {
+            $configuracion[$parametro->categoria][$parametro->clave] = [
+                'nombre' => $parametro->nombre,
+                'descripcion' => $parametro->descripcion,
+                'tipo' => $parametro->tipo,
+                'valor_actual' => $parametro->valor,
+                'valor_por_defecto' => $parametro->valor_por_defecto,
+                'opciones' => $parametro->opciones,
+                'modificable' => $parametro->modificable,
+                'orden_visualizacion' => $parametro->orden_visualizacion,
+                'exportado_en' => now()->toISOString()
+            ];
+        }
+
+        return $configuracion;
     }
 
     protected static function boot()
     {
         parent::boot();
 
+        static::updating(function ($parametro) {
+            if ($parametro->isDirty('valor')) {
+                static::validarValor(
+                    $parametro->valor,
+                    $parametro->tipo,
+                    $parametro->opciones
+                );
+            }
+        });
+
         static::updated(function ($parametro) {
-            // Limpiar cache cuando se actualiza un parámetro
             Cache::forget("parametro_{$parametro->clave}");
-            Cache::forget("parametros_categoria_{$parametro->categoria}");
+
+            if ($parametro->isDirty('valor')) {
+                Log::info("Parámetro modificado", [
+                    'clave' => $parametro->clave,
+                    'valor_anterior' => $parametro->getOriginal('valor'),
+                    'valor_nuevo' => $parametro->valor,
+                    'usuario_id' => $parametro->modificado_por
+                ]);
+            }
+        });
+
+        static::deleted(function ($parametro) {
+            Cache::forget("parametro_{$parametro->clave}");
         });
     }
+}

@@ -38,7 +38,27 @@ class PlantillaController extends Controller
             $plantilla->estadisticas_uso = $plantilla->obtenerEstadisticasUso(30);
         }
 
-        return view('plantillas.index', compact('plantillas'));
+        // SOLUCIÓN: Agregar las métricas que faltan
+        $metricas = [
+            'total' => Plantilla::count(),
+            'activas' => Plantilla::where('activa', true)->count(),
+            'turnos_total' => DB::table('plantilla_turnos')
+                ->join('plantillas', 'plantilla_turnos.plantilla_id', '=', 'plantillas.id')
+                ->where('plantilla_turnos.activo', true)
+                ->count(),
+            'ultima_generacion' => Turno::where('created_at', '>=', now()->subDays(7))
+                ->whereNotNull('plantilla_id')
+                ->exists()
+                ? Turno::where('created_at', '>=', now()->subDays(7))
+                    ->whereNotNull('plantilla_id')
+                    ->latest()
+                    ->first()
+                    ->created_at
+                    ->diffForHumans()
+                : 'Nunca'
+        ];
+
+        return view('plantillas.index', compact('plantillas', 'metricas'));
     }
 
     public function show($id)
@@ -320,5 +340,23 @@ class PlantillaController extends Controller
         $plantilla = Plantilla::with('plantillaTurnos')->findOrFail($id);
 
         return $this->successResponse($plantilla);
+    }
+
+    // Métodos de respuesta para APIs
+    private function successResponse($data = null, $message = 'Operación exitosa')
+    {
+        return response()->json([
+            'success' => true,
+            'message' => $message,
+            'data' => $data
+        ]);
+    }
+
+    private function errorResponse($message = 'Error en la operación')
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message
+        ], 500);
     }
 }

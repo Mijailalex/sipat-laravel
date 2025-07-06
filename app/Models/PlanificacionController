@@ -1,0 +1,577 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Planificacion;
+use App\Models\Conductor;
+use App\Models\Bus;
+use App\Models\HistorialPlanificacion;
+use App\Services\ImportadorDatosService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
+use Carbon\Carbon;
+use Maatwebsite\Excel\Facades\Excel;
+
+class PlanificacionController extends Controller
+{
+    /**
+     * PANTALLA PRINCIPAL DE PLANIFICACIÓN
+     */
+    public function index(Request $request)
+    {
+        $fechaSeleccionada = $request->get('fecha', Carbon::today()->format('Y-m-d'));
+        $tramoFiltro = $request->get('tramo', 'TODOS');
+        $estadoFiltro = $request->get('estado', 'ACTIVOS');
+
+        // Obtener planificaciones con filtros
+        $query = Planificacion::with(['conductor', 'bus'])
+            ->porFecha($fechaSeleccionada);
+
+        if ($tramoFiltro !== 'TODOS') {
+            $query->porTramo($tramoFiltro);
+        }
+
+        if ($estadoFiltro === 'ACTIVOS') {
+            $query->vigentes();
+        } elseif ($estadoFiltro !== 'TODOS') {
+            $query->porEstado($estadoFiltro);
+        }
+
+        $planificaciones = $query->orderBy('hora_salida')->get();
+
+        // Agrupar por tramo para mejor visualización
+        $planificacionesAgrupadas = $planificaciones->groupBy('tramo');
+
+        // Obtener métricas del día
+        $metricas = $this->obtenerMetricasDia($fechaSeleccionada);
+
+        // Obtener conductores disponibles para asignación rápida
+        $conductoresDisponibles = Conductor::disponiblesParaTurno(
+            $fechaSeleccionada,
+            Carbon::now()->format('H:i:s'),
+            null
+        )->limit(10)->get();
+
+        return view('planificacion.index', compact(
+            'planificacionesAgrupadas',
+            'fechaSeleccionada',
+            'tramoFiltro',
+            'estadoFiltro',
+            'metricas',
+            'conductoresDisponibles'
+        ));
+    }
+
+    /**
+     * FORMULARIO PARA CREAR NUEVA PLANIFICACIÓN
+     */
+    public function create(Request $request)
+    {
+        $fecha = $request->get('fecha', Carbon::tomorrow()->format('Y-m-d'));
+        $hora = $request->get('hora', '06:00');
+        $tramo = $request->get('tramo', Planificacion::TRAMO_LARGA);
+
+        // Obtener conductores disponibles para la fecha/hora
+        $conductoresDisponibles = Conductor::disponiblesParaTurno($fecha, $hora, $tramo)->get();
+
+        // Obtener buses disponibles
+        $busesDisponibles = Bus::disponiblesParaTurno($fecha, $hora)->get();
+
+        // Sugerir mejores conductores usando IA del sistema
+        $sugerenciasConductores = [];
+        if ($conductoresDisponibles->isNotEmpty()) {
+            foreach ($conductoresDisponibles->take(5) as $conductor) {
+                $score = Planificacion::calcularScoreCompatibilidad($conductor, [
+                    'fecha_salida' => $fecha,
+                    'hora_salida' => $hora,
+                    'tramo' => $tramo,
+                    'origen_conductor' => $conductor->origen,
+                    'tipo_servicio' => Planificacion::SERVICIO_ESTANDAR
+                ]);
+
+                $sugerenciasConductores[] = [
+                    'conductor' => $conductor,
+                    'score' => $score,
+                    'nivel' => $this->obtenerNivelCompatibilidad($score)
+                ];
+            }
+
+            // Ordenar por mejor score
+            usort($sugerenciasConductores, function($a, $b) {
+                return $b['score'] <=> $a['score'];
+            });
+        }
+
+        return view('planificacion.create', compact(
+            'fecha',
+            'hora',
+            'tramo',
+            'conductoresDisponibles',
+            'busesDisponibles',
+            'sugerenciasConductores'
+        ));
+    }
+
+    /**
+     * GUARDAR NUEVA PLANIFICACIÓN
+     */
+    public function store(Request $request)
+    {
+        $request->validate([
+            'fecha_salida' => 'required|date|after_or_equal:today',
+            'hora_salida' => 'required|date_format:H:i',
+            'hora_llegada' => 'required|date_format:H:i|after:hora_salida',
+            'codigo_bus' => 'required|exists:buses,codigo',
+            'codigo_conductor' => 'required|exists:conductores,codigo',
+            'tipo_servicio' => 'required|in:ESTANDAR,NAZCA,VIP,EXPRESS,ESCALA',
+            'tramo' => 'required|in:LARGA,CORTA',
+            'origen_destino' => 'required|string|max:200',
+            'observaciones' => 'nullable|string|max:500'
+        ]);
+
+        try {
+            // Preparar datos para creación
+            $datos = $request->only([
+                'fecha_salida', 'hora_salida', 'hora_llegada', 'codigo_bus',
+                'codigo_conductor', 'tipo_servicio', 'tramo', 'origen_destino',
+                'observaciones'
+            ]);
+
+            // Agregar datos adicionales
+            $conductor = Conductor::where('codigo', $datos['codigo_conductor'])->first();
+            $datos['nombre_conductor'] = $conductor->nombre;
+            $datos['origen_conductor'] = $conductor->origen;
+            $datos['regimen_conductor'] = $conductor->regimen;
+
+            // Crear planificación usando el modelo
+            $planificacion = Planificacion::crear($datos, Auth::id());
+
+            return redirect()
+                ->route('planificacion.show', $planificacion)
+                ->with('success', "Planificación #{$planificacion->numero_salida} creada exitosamente");
+
+        } catch (\Exception $e) {
+            return back()
+                ->withInput()
+                ->with('error', 'Error al crear planificación: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * VER DETALLE DE PLANIFICACIÓN
+     */
+    public function show(Planificacion $planificacion)
+    {
+        $planificacion->load(['conductor', 'bus', 'historialCambios.usuario', 'replanificaciones']);
+
+        // Obtener validaciones relacionadas
+        $validaciones = \App\Models\Validacion::where('conductor_id', $planificacion->conductor->id)
+            ->whereDate('created_at', $planificacion->fecha_salida)
+            ->latest()
+            ->get();
+
+        // Calcular métricas de la planificación
+        $metricas = [
+            'duracion_turno' => Carbon::parse($planificacion->hora_salida)
+                ->diffInMinutes(Carbon::parse($planificacion->hora_llegada)),
+            'score_conductor' => $planificacion->conductor ?
+                ($planificacion->conductor->eficiencia + $planificacion->conductor->puntualidad) / 2 : 0,
+            'dias_acumulados' => $planificacion->conductor->dias_acumulados ?? 0,
+            'historial_servicios' => $planificacion->conductor->rutas_cortas()
+                ->whereDate('created_at', '>=', Carbon::now()->subDays(7))
+                ->count()
+        ];
+
+        return view('planificacion.show', compact('planificacion', 'validaciones', 'metricas'));
+    }
+
+    /**
+     * FORMULARIO DE EDICIÓN/REPLANIFICACIÓN
+     */
+    public function edit(Planificacion $planificacion)
+    {
+        // Solo permitir edición de planificaciones en estado PROGRAMADO
+        if (!in_array($planificacion->estado_planificacion, [
+            Planificacion::ESTADO_BORRADOR,
+            Planificacion::ESTADO_PROGRAMADO
+        ])) {
+            return redirect()
+                ->route('planificacion.show', $planificacion)
+                ->with('warning', 'Solo se pueden editar planificaciones en estado BORRADOR o PROGRAMADO');
+        }
+
+        $conductoresDisponibles = Conductor::disponiblesParaTurno(
+            $planificacion->fecha_salida->format('Y-m-d'),
+            $planificacion->hora_salida->format('H:i'),
+            $planificacion->tramo
+        )->get();
+
+        $busesDisponibles = Bus::disponiblesParaTurno(
+            $planificacion->fecha_salida->format('Y-m-d'),
+            $planificacion->hora_salida->format('H:i')
+        )->get();
+
+        return view('planificacion.edit', compact(
+            'planificacion',
+            'conductoresDisponibles',
+            'busesDisponibles'
+        ));
+    }
+
+    /**
+     * ACTUALIZAR PLANIFICACIÓN (REPLANIFICACIÓN)
+     */
+    public function update(Request $request, Planificacion $planificacion)
+    {
+        $request->validate([
+            'fecha_salida' => 'required|date',
+            'hora_salida' => 'required|date_format:H:i',
+            'hora_llegada' => 'required|date_format:H:i|after:hora_salida',
+            'codigo_bus' => 'required|exists:buses,codigo',
+            'codigo_conductor' => 'required|exists:conductores,codigo',
+            'motivo_cambio' => 'required|string|max:300',
+            'observaciones' => 'nullable|string|max:500'
+        ]);
+
+        try {
+            // Verificar si realmente hay cambios significativos
+            $cambiosSignificativos = $this->verificarCambiosSignificativos($planificacion, $request);
+
+            if (!$cambiosSignificativos) {
+                return back()->with('warning', 'No se detectaron cambios significativos');
+            }
+
+            // Preparar datos para replanificación
+            $nuevosDatos = $request->only([
+                'fecha_salida', 'hora_salida', 'hora_llegada', 'codigo_bus',
+                'codigo_conductor', 'tipo_servicio', 'tramo', 'origen_destino',
+                'observaciones'
+            ]);
+
+            // Agregar datos del conductor
+            $conductor = Conductor::where('codigo', $nuevosDatos['codigo_conductor'])->first();
+            $nuevosDatos['nombre_conductor'] = $conductor->nombre;
+            $nuevosDatos['origen_conductor'] = $conductor->origen;
+            $nuevosDatos['regimen_conductor'] = $conductor->regimen;
+
+            // Ejecutar replanificación
+            $nuevaPlanificacion = $planificacion->replanificar(
+                $nuevosDatos,
+                $request->motivo_cambio,
+                Auth::id()
+            );
+
+            return redirect()
+                ->route('planificacion.show', $nuevaPlanificacion)
+                ->with('success', "Replanificación completada. Nueva planificación #{$nuevaPlanificacion->numero_salida}");
+
+        } catch (\Exception $e) {
+            return back()
+                ->withInput()
+                ->with('error', 'Error al replanificar: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * CANCELAR PLANIFICACIÓN
+     */
+    public function destroy(Request $request, Planificacion $planificacion)
+    {
+        $request->validate([
+            'motivo_cancelacion' => 'required|string|max:300'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            // Actualizar estado
+            $planificacion->update([
+                'estado_planificacion' => Planificacion::ESTADO_CANCELADO,
+                'observaciones' => $planificacion->observaciones . ' | CANCELADO: ' . $request->motivo_cancelacion,
+                'usuario_modificacion' => Auth::id()
+            ]);
+
+            // Liberar conductor
+            if ($planificacion->conductor) {
+                $planificacion->conductor->liberarDeTurno();
+            }
+
+            // Registrar en historial
+            HistorialPlanificacion::registrar($planificacion, 'CANCELACION', Auth::id(), [
+                'motivo' => $request->motivo_cancelacion
+            ]);
+
+            DB::commit();
+
+            return redirect()
+                ->route('planificacion.index')
+                ->with('success', "Planificación #{$planificacion->numero_salida} cancelada");
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            return back()->with('error', 'Error al cancelar: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * ASIGNACIÓN AUTOMÁTICA DE CONDUCTORES
+     */
+    public function asignacionAutomatica(Request $request)
+    {
+        $request->validate([
+            'fecha' => 'required|date|after_or_equal:today',
+            'tramo' => 'required|in:LARGA,CORTA,AMBOS',
+            'tipo_servicio' => 'required|string'
+        ]);
+
+        try {
+            $fecha = $request->fecha;
+            $tramo = $request->tramo;
+            $tipoServicio = $request->tipo_servicio;
+
+            // Obtener planificaciones sin conductor asignado
+            $planificacionesSinConductor = Planificacion::whereDate('fecha_salida', $fecha)
+                ->whereNull('codigo_conductor')
+                ->when($tramo !== 'AMBOS', function($query) use ($tramo) {
+                    return $query->where('tramo', $tramo);
+                })
+                ->orderBy('hora_salida')
+                ->get();
+
+            $asignacionesRealizadas = 0;
+            $errores = [];
+
+            foreach ($planificacionesSinConductor as $planificacion) {
+                $resultado = Planificacion::asignarMejorConductor([
+                    'fecha_salida' => $planificacion->fecha_salida,
+                    'hora_salida' => $planificacion->hora_salida,
+                    'tramo' => $planificacion->tramo,
+                    'origen_conductor' => $planificacion->origen_conductor,
+                    'tipo_servicio' => $tipoServicio
+                ]);
+
+                if ($resultado && $resultado['conductor']) {
+                    $planificacion->update([
+                        'codigo_conductor' => $resultado['conductor']->codigo,
+                        'nombre_conductor' => $resultado['conductor']->nombre,
+                        'usuario_modificacion' => Auth::id()
+                    ]);
+
+                    $resultado['conductor']->asignarATurno($planificacion);
+                    $asignacionesRealizadas++;
+
+                    // Registrar en historial
+                    HistorialPlanificacion::registrar($planificacion, 'ASIGNACION_AUTOMATICA', Auth::id(), [
+                        'score_compatibilidad' => $resultado['score'],
+                        'nivel_compatibilidad' => $resultado['compatibilidad']
+                    ]);
+                } else {
+                    $errores[] = "No se encontró conductor disponible para salida #{$planificacion->numero_salida}";
+                }
+            }
+
+            $mensaje = "Asignación automática completada. {$asignacionesRealizadas} conductores asignados";
+            if (!empty($errores)) {
+                $mensaje .= ". Errores: " . implode(', ', $errores);
+            }
+
+            return back()->with('success', $mensaje);
+
+        } catch (\Exception $e) {
+            return back()->with('error', 'Error en asignación automática: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * IMPORTAR PLANIFICACIONES DESDE EXCEL
+     */
+    public function importarExcel(Request $request)
+    {
+        $request->validate([
+            'archivo_excel' => 'required|file|mimes:xlsx,xls|max:10240', // 10MB máximo
+            'fecha_planificacion' => 'required|date|after_or_equal:today'
+        ]);
+
+        try {
+            $archivo = $request->file('archivo_excel');
+            $fechaPlanificacion = $request->fecha_planificacion;
+
+            // Usar servicio especializado para importación
+            $importador = new ImportadorDatosService();
+            $resultado = $importador->importarPlanificacionesDesdeExcel($archivo, $fechaPlanificacion);
+
+            $mensaje = "Importación completada. " .
+                      "Éxitos: {$resultado['exitosos']}, " .
+                      "Errores: {$resultado['errores']}, " .
+                      "Omitidos: {$resultado['omitidos']}";
+
+            if (!empty($resultado['detalles_errores'])) {
+                session()->flash('errores_importacion', $resultado['detalles_errores']);
+            }
+
+            return back()->with('success', $mensaje);
+
+        } catch (\Exception $e) {
+            return back()->with('error', 'Error al importar: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * DASHBOARD DE MÉTRICAS DE PLANIFICACIÓN
+     */
+    public function dashboard(Request $request)
+    {
+        $fechaInicio = $request->get('fecha_inicio', Carbon::now()->startOfWeek()->format('Y-m-d'));
+        $fechaFin = $request->get('fecha_fin', Carbon::now()->endOfWeek()->format('Y-m-d'));
+
+        // Obtener métricas generales
+        $metricas = Planificacion::obtenerMetricasPlanificacion($fechaInicio, $fechaFin);
+
+        // Métricas adicionales
+        $metricasDetalladas = [
+            'conductores_mas_utilizados' => $this->obtenerConductoresMasUtilizados($fechaInicio, $fechaFin),
+            'eficiencia_por_tramo' => $this->obtenerEficienciaPorTramo($fechaInicio, $fechaFin),
+            'distribucion_horaria' => $this->obtenerDistribucionHoraria($fechaInicio, $fechaFin),
+            'tendencia_replanificaciones' => $this->obtenerTendenciaReplanificaciones($fechaInicio, $fechaFin)
+        ];
+
+        return view('planificacion.dashboard', compact(
+            'metricas',
+            'metricasDetalladas',
+            'fechaInicio',
+            'fechaFin'
+        ));
+    }
+
+    /**
+     * API PARA OBTENER CONDUCTORES DISPONIBLES
+     */
+    public function conductoresDisponibles(Request $request)
+    {
+        $fecha = $request->get('fecha', Carbon::today()->format('Y-m-d'));
+        $hora = $request->get('hora', Carbon::now()->format('H:i'));
+        $tramo = $request->get('tramo');
+
+        $conductores = Conductor::disponiblesParaTurno($fecha, $hora, $tramo)
+            ->with(['validaciones' => function($query) {
+                $query->where('estado', 'PENDIENTE')->orderBy('created_at', 'desc');
+            }])
+            ->get()
+            ->map(function($conductor) use ($fecha, $hora, $tramo) {
+                $score = 0;
+                if ($tramo) {
+                    $score = Planificacion::calcularScoreCompatibilidad($conductor, [
+                        'fecha_salida' => $fecha,
+                        'hora_salida' => $hora,
+                        'tramo' => $tramo,
+                        'origen_conductor' => $conductor->origen,
+                        'tipo_servicio' => Planificacion::SERVICIO_ESTANDAR
+                    ]);
+                }
+
+                return [
+                    'codigo' => $conductor->codigo,
+                    'nombre' => $conductor->nombre,
+                    'eficiencia' => $conductor->eficiencia,
+                    'puntualidad' => $conductor->puntualidad,
+                    'dias_acumulados' => $conductor->dias_acumulados,
+                    'origen' => $conductor->origen,
+                    'estado' => $conductor->estado,
+                    'score_compatibilidad' => $score,
+                    'nivel_compatibilidad' => $this->obtenerNivelCompatibilidad($score),
+                    'validaciones_pendientes' => $conductor->validaciones->count()
+                ];
+            })
+            ->sortByDesc('score_compatibilidad')
+            ->values();
+
+        return response()->json($conductores);
+    }
+
+    /**
+     * MÉTODOS AUXILIARES PRIVADOS
+     */
+    private function obtenerMetricasDia($fecha)
+    {
+        $planificaciones = Planificacion::whereDate('fecha_salida', $fecha);
+
+        return [
+            'total_planificaciones' => $planificaciones->count(),
+            'por_tramo' => $planificaciones->clone()
+                ->selectRaw('tramo, COUNT(*) as total')
+                ->groupBy('tramo')
+                ->pluck('total', 'tramo'),
+            'por_estado' => $planificaciones->clone()
+                ->selectRaw('estado_planificacion, COUNT(*) as total')
+                ->groupBy('estado_planificacion')
+                ->pluck('total', 'estado_planificacion'),
+            'cobertura_conductores' => $planificaciones->clone()->whereNotNull('codigo_conductor')->count(),
+            'sin_asignar' => $planificaciones->clone()->whereNull('codigo_conductor')->count()
+        ];
+    }
+
+    private function verificarCambiosSignificativos($planificacion, $request)
+    {
+        $camposImportantes = ['fecha_salida', 'hora_salida', 'hora_llegada', 'codigo_conductor', 'codigo_bus'];
+
+        foreach ($camposImportantes as $campo) {
+            if ($planificacion->$campo != $request->$campo) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function obtenerNivelCompatibilidad($score)
+    {
+        if ($score >= 80) return 'EXCELENTE';
+        if ($score >= 65) return 'BUENA';
+        if ($score >= 50) return 'REGULAR';
+        return 'BAJA';
+    }
+
+    private function obtenerConductoresMasUtilizados($fechaInicio, $fechaFin)
+    {
+        return Planificacion::whereBetween('fecha_salida', [$fechaInicio, $fechaFin])
+            ->whereNotNull('codigo_conductor')
+            ->selectRaw('codigo_conductor, nombre_conductor, COUNT(*) as total_turnos')
+            ->groupBy('codigo_conductor', 'nombre_conductor')
+            ->orderByDesc('total_turnos')
+            ->limit(10)
+            ->get();
+    }
+
+    private function obtenerEficienciaPorTramo($fechaInicio, $fechaFin)
+    {
+        return Planificacion::whereBetween('fecha_salida', [$fechaInicio, $fechaFin])
+            ->selectRaw('tramo,
+                COUNT(*) as total,
+                SUM(CASE WHEN estado_planificacion = "COMPLETADO" THEN 1 ELSE 0 END) as completados,
+                ROUND((SUM(CASE WHEN estado_planificacion = "COMPLETADO" THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) as eficiencia
+            ')
+            ->groupBy('tramo')
+            ->get();
+    }
+
+    private function obtenerDistribucionHoraria($fechaInicio, $fechaFin)
+    {
+        return Planificacion::whereBetween('fecha_salida', [$fechaInicio, $fechaFin])
+            ->selectRaw('HOUR(hora_salida) as hora, COUNT(*) as total')
+            ->groupBy('hora')
+            ->orderBy('hora')
+            ->get();
+    }
+
+    private function obtenerTendenciaReplanificaciones($fechaInicio, $fechaFin)
+    {
+        return Planificacion::whereBetween('fecha_salida', [$fechaInicio, $fechaFin])
+            ->where('es_replanificacion', true)
+            ->selectRaw('DATE(fecha_salida) as fecha, COUNT(*) as total')
+            ->groupBy('fecha')
+            ->orderBy('fecha')
+            ->get();
+    }
+}

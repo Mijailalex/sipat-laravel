@@ -1,0 +1,172 @@
+{
+  "VALIDACIONES": {
+    "max_dias_validacion": {
+      "nombre": "Máximo días para validación",
+      "descripcion": "Número máximo de días permitidos para completar una validación de conductor",
+      "tipo": "INTEGER",
+      "valor_actual": "7",
+      "valor_por_defecto": "5",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 1
+    },
+    "validacion_automatica": {
+      "nombre": "Validación automática",
+      "descripcion": "Activar validaciones automáticas del sistema",
+      "tipo": "BOOLEAN",
+      "valor_actual": "true",
+      "valor_por_defecto": "true",
+      "opciones": ["true", "false"],
+      "modificable": true,
+      "orden_visualizacion": 2
+    },
+    "umbral_critico": {
+      "nombre": "Umbral crítico de validaciones",
+      "descripcion": "Porcentaje de validaciones fallidas que activa alertas críticas",
+      "tipo": "DECIMAL",
+      "valor_actual": "15.5",
+      "valor_por_defecto": "20.0",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 3
+    }
+  },
+  "REPORTES": {
+    "formato_fecha": {
+      "nombre": "Formato de fecha en reportes",
+      "descripcion": "Formato de fecha utilizado en los reportes generados",
+      "tipo": "STRING",
+      "valor_actual": "Y-m-d",
+      "valor_por_defecto": "Y-m-d",
+      "opciones": ["Y-m-d", "d/m/Y", "m/d/Y", "d-m-Y"],
+      "modificable": true,
+      "orden_visualizacion": 1
+    },
+    "generar_reportes_automaticos": {
+      "nombre": "Generar reportes automáticos",
+      "descripcion": "Generar automáticamente reportes semanales y mensuales",
+      "tipo": "BOOLEAN",
+      "valor_actual": "true",
+      "valor_por_defecto": "true",
+      "opciones": ["true", "false"],
+      "modificable": true,
+      "orden_visualizacion": 2
+    },
+    "hora_generacion_reportes": {
+      "nombre": "Hora de generación de reportes",
+      "descripcion": "Hora diaria para generar reportes automáticos",
+      "tipo": "TIME",
+      "valor_actual": "06:00",
+      "valor_por_defecto": "06:00",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 3
+    }
+  },
+  "GENERAL": {
+    "nombre_empresa": {
+      "nombre": "Nombre de la empresa",
+      "descripcion": "Nombre de la empresa que aparece en reportes y documentos",
+      "tipo": "STRING",
+      "valor_actual": "SIPAT Transport",
+      "valor_por_defecto": "SIPAT Transport",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 1
+    },
+    "items_por_pagina": {
+      "nombre": "Items por página",
+      "descripcion": "Número de elementos mostrados por página en las listas",
+      "tipo": "INTEGER",
+      "valor_actual": "20",
+      "valor_por_defecto": "20",
+      "opciones": ["10", "20", "50", "100"],
+      "modificable": true,
+      "orden_visualizacion": 2
+    },
+    "timezone": {
+      "nombre": "Zona horaria",
+      "descripcion": "Zona horaria utilizada por el sistema",
+      "tipo": "STRING",
+      "valor_actual": "America/Lima",
+      "valor_por_defecto": "America/Lima",
+      "opciones": ["America/Lima", "UTC", "America/New_York", "Europe/Madrid"],
+      "modificable": true,
+      "orden_visualizacion": 3
+    },
+    "configuracion_avanzada": {
+      "nombre": "Configuración avanzada",
+      "descripcion": "Configuraciones JSON adicionales del sistema",
+      "tipo": "JSON",
+      "valor_actual": "{\"cache_tiempo\": 3600, \"debug_mode\": false}",
+      "valor_por_defecto": "{\"cache_tiempo\": 3600, \"debug_mode\": false}",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 4
+    }
+  },
+  "CONDUCTORES": {
+    "max_dias_inactividad": {
+      "nombre": "Máximo días de inactividad",
+      "descripcion": "Días máximos sin actividad antes de marcar conductor como inactivo",
+      "tipo": "INTEGER",
+      "valor_actual": "30",
+      "valor_por_defecto": "30",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 1
+    },
+    "renovacion_automatica_licencia": {
+      "nombre": "Renovación automática de licencia",
+      "descripcion": "Enviar recordatorios automáticos para renovación de licencias",
+      "tipo": "BOOLEAN",
+      "valor_actual": "true",
+      "valor_por_defecto": "true",
+      "opciones": ["true", "false"],
+      "modificable": true,
+      "orden_visualizacion": 2
+    },
+    "score_minimo_operacion": {
+      "nombre": "Score mínimo para operación",
+      "descripcion": "Puntuación mínima requerida para que un conductor pueda operar",
+      "tipo": "DECIMAL",
+      "valor_actual": "75.0",
+      "valor_por_defecto": "70.0",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 3
+    }
+  },
+  "ALERTAS": {
+    "activar_notificaciones_email": {
+      "nombre": "Activar notificaciones por email",
+      "descripcion": "Enviar alertas importantes por correo electrónico",
+      "tipo": "BOOLEAN",
+      "valor_actual": "true",
+      "valor_por_defecto": "true",
+      "opciones": ["true", "false"],
+      "modificable": true,
+      "orden_visualizacion": 1
+    },
+    "nivel_alerta_defecto": {
+      "nombre": "Nivel de alerta por defecto",
+      "descripcion": "Nivel de severidad por defecto para nuevas alertas",
+      "tipo": "STRING",
+      "valor_actual": "ADVERTENCIA",
+      "valor_por_defecto": "INFO",
+      "opciones": ["INFO", "ADVERTENCIA", "CRITICA"],
+      "modificable": true,
+      "orden_visualizacion": 2
+    },
+    "tiempo_retencion_alertas": {
+      "nombre": "Tiempo de retención de alertas",
+      "descripcion": "Días que se mantienen las alertas en el sistema antes de archivarse",
+      "tipo": "INTEGER",
+      "valor_actual": "90",
+      "valor_por_defecto": "90",
+      "opciones": null,
+      "modificable": true,
+      "orden_visualizacion": 3
+    }
+  }
+}

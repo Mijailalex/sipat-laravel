@@ -3,31 +3,77 @@
 namespace App\Http\Controllers;
 
 use App\Models\Parametro;
+use App\Http\Requests\ParametroRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 
 class ParametroController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Parametro::visibles();
+        $query = Parametro::query();
 
         if ($request->filled('categoria')) {
-            $query->categoria($request->categoria);
+            $query->where('categoria', $request->categoria);
         }
 
         if ($request->filled('buscar')) {
-            $query->where(function ($q) use ($request) {
-                $q->where('nombre', 'like', '%' . $request->buscar . '%')
-                  ->orWhere('clave', 'like', '%' . $request->buscar . '%')
-                  ->orWhere('descripcion', 'like', '%' . $request->buscar . '%');
+            $texto = $request->buscar;
+            $query->where(function($q) use ($texto) {
+                $q->where('nombre', 'like', "%{$texto}%")
+                  ->orWhere('clave', 'like', "%{$texto}%")
+                  ->orWhere('descripcion', 'like', "%{$texto}%");
             });
         }
 
-        $parametros = $query->ordenados()->get()->groupBy('categoria');
-        $categorias = Parametro::obtenerCategorias();
+        if ($request->has('modificable')) {
+            $query->where('modificable', $request->boolean('modificable'));
+        }
 
-        return view('parametros.index', compact('parametros', 'categorias'));
+        $parametros = $query->where('visible_interfaz', true)
+                          ->orderBy('categoria')
+                          ->orderBy('orden_visualizacion')
+                          ->orderBy('nombre')
+                          ->paginate(20);
+
+        $categorias = Parametro::select('categoria')->distinct()->orderBy('categoria')->pluck('categoria');
+
+        $metricas = [
+            'total' => Parametro::count(),
+            'por_categoria' => Parametro::selectRaw('categoria, count(*) as total')
+                                      ->groupBy('categoria')
+                                      ->pluck('total', 'categoria'),
+            'modificables' => Parametro::where('modificable', true)->count(),
+            'no_modificables' => Parametro::where('modificable', false)->count()
+        ];
+
+        return view('parametros.index', compact('parametros', 'categorias', 'metricas'));
+    }
+
+    public function create()
+    {
+        $categorias = Parametro::select('categoria')->distinct()->orderBy('categoria')->pluck('categoria');
+        return view('parametros.create', compact('categorias'));
+    }
+
+    public function store(ParametroRequest $request)
+    {
+        try {
+            DB::beginTransaction();
+
+            $data = $request->getValidatedData();
+            Parametro::create($data);
+
+            DB::commit();
+            return redirect()->route('parametros.index')->with('success', 'Parámetro creado exitosamente');
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            Log::error('Error creando parámetro: ' . $e->getMessage());
+            return back()->with('error', 'Error al crear parámetro: ' . $e->getMessage())->withInput();
+        }
     }
 
     public function show($id)
@@ -36,68 +82,99 @@ class ParametroController extends Controller
         return view('parametros.show', compact('parametro'));
     }
 
-    public function update(Request $request, $id)
+    public function edit($id)
+    {
+        $parametro = Parametro::findOrFail($id);
+        $categorias = Parametro::select('categoria')->distinct()->orderBy('categoria')->pluck('categoria');
+        return view('parametros.edit', compact('parametro', 'categorias'));
+    }
+
+    public function update(ParametroRequest $request, $id)
     {
         $parametro = Parametro::findOrFail($id);
 
-        $validated = $request->validate([
-            'valor' => 'required'
-        ]);
-
         try {
-            Parametro::establecerValor($parametro->clave, $validated['valor'], auth()->id());
+            DB::beginTransaction();
 
-            return back()->with('success', 'Parámetro actualizado exitosamente');
+            $data = $request->getValidatedData();
+            $parametro->update($data);
+
+            DB::commit();
+            return redirect()->route('parametros.index')->with('success', 'Parámetro actualizado exitosamente');
 
         } catch (\Exception $e) {
-            return back()->with('error', 'Error al actualizar parámetro: ' . $e->getMessage());
+            DB::rollback();
+            Log::error('Error actualizando parámetro: ' . $e->getMessage());
+            return back()->with('error', 'Error al actualizar parámetro: ' . $e->getMessage())->withInput();
+        }
+    }
+
+    public function destroy($id)
+    {
+        try {
+            $parametro = Parametro::findOrFail($id);
+
+            if (!$parametro->modificable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Este parámetro no puede ser eliminado'
+                ], 403);
+            }
+
+            $parametro->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Parámetro eliminado exitosamente'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Error eliminando parámetro: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al eliminar parámetro: ' . $e->getMessage()
+            ], 500);
         }
     }
 
     public function exportarConfiguracion()
     {
-        $parametros = Parametro::visibles()->ordenados()->get();
+        try {
+            $configuracion = Parametro::exportarConfiguracion();
 
-        $configuracion = [];
-        foreach ($parametros as $parametro) {
-            if (!isset($configuracion[$parametro->categoria])) {
-                $configuracion[$parametro->categoria] = [];
-            }
-
-            $configuracion[$parametro->categoria][$parametro->clave] = [
-                'nombre' => $parametro->nombre,
-                'valor_actual' => $parametro->valor_formateado,
-                'valor_por_defecto' => $parametro->valor_por_defecto,
-                'tipo' => $parametro->tipo,
-                'descripcion' => $parametro->descripcion,
-                'modificable' => $parametro->modificable,
-                'ultima_modificacion' => $parametro->updated_at?->format('Y-m-d H:i:s')
+            $headers = [
+                'Content-Type' => 'application/json',
+                'Content-Disposition' => 'attachment; filename="parametros_configuracion_' . now()->format('Y-m-d_H-i-s') . '.json"'
             ];
+
+            return response()->json($configuracion, 200, $headers);
+
+        } catch (\Exception $e) {
+            Log::error('Error exportando configuración: ' . $e->getMessage());
+            return back()->with('error', 'Error al exportar configuración: ' . $e->getMessage());
         }
-
-        $headers = [
-            'Content-Type' => 'application/json',
-            'Content-Disposition' => 'attachment; filename="configuracion_sistema_' . now()->format('Y-m-d') . '.json"'
-        ];
-
-        return response()->json($configuracion, 200, $headers);
     }
 
     public function importarConfiguracion(Request $request)
     {
-        $request->validate([
-            'archivo' => 'required|file|mimes:json'
+        $validator = Validator::make($request->all(), [
+            'archivo' => 'required|file|mimes:json|max:2048'
         ]);
+
+        if ($validator->fails()) {
+            return back()->withErrors($validator);
+        }
 
         try {
             $contenido = file_get_contents($request->file('archivo')->path());
             $configuracion = json_decode($contenido, true);
 
             if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new \Exception('Archivo JSON inválido');
+                throw new \Exception('Archivo JSON inválido: ' . json_last_error_msg());
             }
 
             $actualizados = 0;
+            $creados = 0;
             $errores = [];
 
             DB::beginTransaction();
@@ -107,13 +184,32 @@ class ParametroController extends Controller
                     try {
                         $parametro = Parametro::where('clave', $clave)->first();
 
-                        if ($parametro && $parametro->modificable) {
-                            Parametro::establecerValor($clave, $datos['valor_actual'], auth()->id());
-                            $actualizados++;
-                        } elseif (!$parametro) {
-                            $errores[] = "Parámetro {$clave} no encontrado";
+                        if ($parametro) {
+                            if ($parametro->modificable) {
+                                $parametro->update([
+                                    'valor' => $datos['valor_actual'] ?? $datos['valor_por_defecto'],
+                                    'modificado_por' => auth()->id()
+                                ]);
+                                $actualizados++;
+                            } else {
+                                $errores[] = "Parámetro {$clave} no es modificable";
+                            }
                         } else {
-                            $errores[] = "Parámetro {$clave} no es modificable";
+                            Parametro::create([
+                                'categoria' => $categoria,
+                                'clave' => $clave,
+                                'nombre' => $datos['nombre'],
+                                'descripcion' => $datos['descripcion'] ?? null,
+                                'tipo' => $datos['tipo'],
+                                'valor' => $datos['valor_actual'] ?? $datos['valor_por_defecto'],
+                                'valor_por_defecto' => $datos['valor_por_defecto'],
+                                'opciones' => isset($datos['opciones']) ? json_encode($datos['opciones']) : null,
+                                'modificable' => $datos['modificable'] ?? true,
+                                'visible_interfaz' => true,
+                                'orden_visualizacion' => $datos['orden_visualizacion'] ?? 0,
+                                'modificado_por' => auth()->id()
+                            ]);
+                            $creados++;
                         }
                     } catch (\Exception $e) {
                         $errores[] = "Parámetro {$clave}: " . $e->getMessage();
@@ -123,242 +219,144 @@ class ParametroController extends Controller
 
             DB::commit();
 
-            $mensaje = "Importación completada. {$actualizados} parámetros actualizados.";
+            $mensaje = "Importación completada. {$actualizados} actualizados, {$creados} creados.";
             if (!empty($errores)) {
-                $mensaje .= " Errores: " . implode(', ', array_slice($errores, 0, 5));
+                $mensaje .= " Errores: " . implode(', ', array_slice($errores, 0, 3));
             }
 
             return back()->with('success', $mensaje);
 
         } catch (\Exception $e) {
             DB::rollback();
+            Log::error('Error en importación: ' . $e->getMessage());
             return back()->with('error', 'Error en la importación: ' . $e->getMessage());
+        }
+    }
+
+    public function descargarPlantilla()
+    {
+        try {
+            $plantilla = [
+                "EJEMPLO_CATEGORIA" => [
+                    "ejemplo_parametro_string" => [
+                        "nombre" => "Ejemplo Parámetro Texto",
+                        "descripcion" => "Este es un ejemplo de parámetro de tipo texto",
+                        "tipo" => "STRING",
+                        "valor_actual" => "Valor ejemplo",
+                        "valor_por_defecto" => "Valor por defecto",
+                        "opciones" => ["Opción 1", "Opción 2", "Opción 3"],
+                        "modificable" => true,
+                        "orden_visualizacion" => 1
+                    ],
+                    "ejemplo_parametro_numero" => [
+                        "nombre" => "Ejemplo Parámetro Número",
+                        "descripcion" => "Este es un ejemplo de parámetro numérico",
+                        "tipo" => "INTEGER",
+                        "valor_actual" => "100",
+                        "valor_por_defecto" => "50",
+                        "opciones" => null,
+                        "modificable" => true,
+                        "orden_visualizacion" => 2
+                    ],
+                    "ejemplo_parametro_boolean" => [
+                        "nombre" => "Ejemplo Parámetro Booleano",
+                        "descripcion" => "Este es un ejemplo de parámetro verdadero/falso",
+                        "tipo" => "BOOLEAN",
+                        "valor_actual" => "true",
+                        "valor_por_defecto" => "false",
+                        "opciones" => ["true", "false"],
+                        "modificable" => true,
+                        "orden_visualizacion" => 3
+                    ]
+                ]
+            ];
+
+            $headers = [
+                'Content-Type' => 'application/json',
+                'Content-Disposition' => 'attachment; filename="plantilla_parametros.json"'
+            ];
+
+            return response()->json($plantilla, 200, $headers);
+
+        } catch (\Exception $e) {
+            Log::error('Error generando plantilla: ' . $e->getMessage());
+            return back()->with('error', 'Error al generar plantilla: ' . $e->getMessage());
         }
     }
 
     public function validarConfiguracion()
     {
-        $parametros = Parametro::all();
-        $problemas = [];
+        try {
+            $parametros = Parametro::all();
+            $problemas = [];
 
-        foreach ($parametros as $parametro) {
-            try {
-                // Validar que el valor actual es válido según el tipo
-                $valorConvertido = Parametro::convertirValor($parametro->valor, $parametro->tipo);
-
-                // Validar opciones si existen
-                if ($parametro->opciones && !in_array($parametro->valor, $parametro->opciones)) {
+            foreach ($parametros as $parametro) {
+                try {
+                    if (!$parametro->validarValorActual()) {
+                        $problemas[] = [
+                            'parametro' => $parametro->clave,
+                            'problema' => 'Valor no válido según el tipo',
+                            'valor_actual' => $parametro->valor
+                        ];
+                    }
+                } catch (\Exception $e) {
                     $problemas[] = [
                         'parametro' => $parametro->clave,
-                        'problema' => 'Valor no está en las opciones válidas',
-                        'valor_actual' => $parametro->valor,
-                        'opciones_validas' => $parametro->opciones
-                    ];
-                }
-
-                // Validaciones adicionales según el tipo
-                if ($parametro->tipo === 'INTEGER' && !is_int($valorConvertido)) {
-                    $problemas[] = [
-                        'parametro' => $parametro->clave,
-                        'problema' => 'Valor no es un entero válido',
+                        'problema' => $e->getMessage(),
                         'valor_actual' => $parametro->valor
                     ];
                 }
-
-            } catch (\Exception $e) {
-                $problemas[] = [
-                    'parametro' => $parametro->clave,
-                    'problema' => 'Error de validación: ' . $e->getMessage(),
-                    'valor_actual' => $parametro->valor
-                ];
             }
-        }
 
-        return $this->successResponse([
-            'configuracion_valida' => empty($problemas),
-            'total_parametros' => $parametros->count(),
-            'problemas_encontrados' => count($problemas),
-            'problemas' => $problemas
-        ], 'Validación de configuración completada');
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'configuracion_valida' => empty($problemas),
+                    'total_parametros' => $parametros->count(),
+                    'problemas_encontrados' => count($problemas),
+                    'problemas' => $problemas
+                ],
+                'message' => 'Validación completada'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Error validando configuración: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al validar configuración: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     public function restaurarDefecto($id)
     {
-        $parametro = Parametro::findOrFail($id);
-
         try {
-            $parametro->restaurarValorDefecto();
+            $parametro = Parametro::findOrFail($id);
 
-            return $this->successResponse(
-                ['nuevo_valor' => $parametro->fresh()->valor_formateado],
-                'Parámetro restaurado al valor por defecto'
-            );
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al restaurar parámetro: ' . $e->getMessage());
-        }
-    }
-
-    public function obtenerPorCategoria($categoria)
-    {
-        $parametros = Parametro::obtenerPorCategoria($categoria);
-
-        return $this->successResponse($parametros, 'Parámetros obtenidos exitosamente');
-    }
-
-    public function actualizarMasivo(Request $request)
-    {
-        $validated = $request->validate([
-            'parametros' => 'required|array',
-            'parametros.*.clave' => 'required|string',
-            'parametros.*.valor' => 'required'
-        ]);
-
-        $actualizados = 0;
-        $errores = [];
-
-        DB::beginTransaction();
-
-        try {
-            foreach ($validated['parametros'] as $param) {
-                try {
-                    Parametro::establecerValor(
-                        $param['clave'],
-                        $param['valor'],
-                        auth()->id()
-                    );
-                    $actualizados++;
-                } catch (\Exception $e) {
-                    $errores[] = "Parámetro {$param['clave']}: " . $e->getMessage();
-                }
+            if (!$parametro->modificable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Este parámetro no puede ser modificado'
+                ], 403);
             }
 
-            if (empty($errores)) {
-                DB::commit();
-                return $this->successResponse(
-                    ['actualizados' => $actualizados],
-                    "Se actualizaron {$actualizados} parámetros exitosamente"
-                );
-            } else {
-                DB::rollback();
-                return $this->errorResponse(
-                    'Errores en la actualización masiva',
-                    $errores
-                );
-            }
+            $parametro->update([
+                'valor' => $parametro->valor_por_defecto,
+                'modificado_por' => auth()->id()
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'data' => ['nuevo_valor' => $parametro->fresh()->valor],
+                'message' => 'Parámetro restaurado al valor por defecto'
+            ]);
 
         } catch (\Exception $e) {
-            DB::rollback();
-            return $this->errorResponse('Error en actualización masiva: ' . $e->getMessage());
+            Log::error('Error restaurando parámetro: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al restaurar parámetro: ' . $e->getMessage()
+            ], 500);
         }
-    }
-
-    public function limpiarCache(Request $request)
-    {
-        try {
-            if ($request->filled('categoria')) {
-                Parametro::limpiarCache($request->categoria);
-                $mensaje = "Cache limpiado para la categoría {$request->categoria}";
-            } else {
-                Parametro::limpiarCache();
-                $mensaje = "Cache de parámetros limpiado completamente";
-            }
-
-            return $this->successResponse(null, $mensaje);
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al limpiar cache: ' . $e->getMessage());
-        }
-    }
-
-    public function obtenerHistorialCambios(Request $request)
-    {
-        $dias = $request->get('dias', 30);
-
-        $historial = Parametro::with('modificadoPor:id,name')
-            ->where('updated_at', '>=', now()->subDays($dias))
-            ->orderBy('updated_at', 'desc')
-            ->get()
-            ->map(function ($parametro) {
-                return [
-                    'clave' => $parametro->clave,
-                    'nombre' => $parametro->nombre,
-                    'categoria' => $parametro->categoria,
-                    'valor_actual' => $parametro->valor_formateado,
-                    'modificado_por' => $parametro->modificadoPor?->name ?? 'Sistema',
-                    'fecha_modificacion' => $parametro->updated_at->format('Y-m-d H:i:s'),
-                    'hace' => $parametro->updated_at->diffForHumans()
-                ];
-            });
-
-        return $this->successResponse($historial, 'Historial obtenido exitosamente');
-    }
-
-    // API Methods
-    public function apiIndex(Request $request)
-    {
-        $query = Parametro::visibles();
-
-        if ($request->filled('categoria')) {
-            $query->categoria($request->categoria);
-        }
-
-        $parametros = $query->ordenados()->get()->groupBy('categoria');
-
-        return $this->successResponse($parametros);
-    }
-
-    public function apiObtenerValor($clave)
-    {
-        try {
-            $valor = Parametro::obtenerValor($clave);
-
-            if ($valor === null) {
-                return $this->errorResponse('Parámetro no encontrado', null, 404);
-            }
-
-            return $this->successResponse(['valor' => $valor]);
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al obtener parámetro: ' . $e->getMessage());
-        }
-    }
-
-    public function apiEstablecerValor(Request $request, $clave)
-    {
-        $validated = $request->validate([
-            'valor' => 'required'
-        ]);
-
-        try {
-            Parametro::establecerValor($clave, $validated['valor'], auth()->id());
-
-            return $this->successResponse(
-                ['nuevo_valor' => Parametro::obtenerValor($clave)],
-                'Parámetro actualizado exitosamente'
-            );
-
-        } catch (\Exception $e) {
-            return $this->errorResponse('Error al establecer parámetro: ' . $e->getMessage());
-        }
-    }
-
-    // Helper methods para respuestas API
-    protected function successResponse($data = null, $message = 'Operación exitosa')
-    {
-        return response()->json([
-            'success' => true,
-            'message' => $message,
-            'data' => $data
-        ]);
-    }
-
-    protected function errorResponse($message = 'Error en la operación', $errors = null, $status = 422)
-    {
-        return response()->json([
-            'success' => false,
-            'message' => $message,
-            'errors' => $errors
-        ], $status);
     }
 }

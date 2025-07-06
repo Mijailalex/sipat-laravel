@@ -4,96 +4,74 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use App\Models\Parametro;
+use Illuminate\Support\Facades\DB;
 
 class ParametroSeeder extends Seeder
 {
     public function run()
     {
-        $parametros = [
-            // Configuraciones de Validaciones
-            [
-                'categoria' => 'VALIDACIONES',
-                'clave' => 'dias_maximos_sin_descanso',
-                'nombre' => 'Días máximos sin descanso',
-                'descripcion' => 'Número máximo de días que un conductor puede trabajar sin descanso obligatorio',
-                'tipo' => 'INTEGER',
-                'valor' => '6',
-                'valor_por_defecto' => '6',
-                'modificable' => true,
-                'visible_interfaz' => true,
-                'orden_visualizacion' => 1,
-                'validaciones' => json_encode(['min' => 1, 'max' => 15])
-            ],
-            [
-                'categoria' => 'VALIDACIONES',
-                'clave' => 'eficiencia_minima_conductor',
-                'nombre' => 'Eficiencia mínima del conductor (%)',
-                'descripcion' => 'Porcentaje mínimo de eficiencia requerido para conductores',
-                'tipo' => 'DECIMAL',
-                'valor' => '80.0',
-                'valor_por_defecto' => '80.0',
-                'modificable' => true,
-                'visible_interfaz' => true,
-                'orden_visualizacion' => 2,
-                'validaciones' => json_encode(['min' => 50.0, 'max' => 100.0])
-            ],
-            [
-                'categoria' => 'VALIDACIONES',
-                'clave' => 'puntualidad_minima_conductor',
-                'nombre' => 'Puntualidad mínima del conductor (%)',
-                'descripcion' => 'Porcentaje mínimo de puntualidad requerido para conductores',
-                'tipo' => 'DECIMAL',
-                'valor' => '85.0',
-                'valor_por_defecto' => '85.0',
-                'modificable' => true,
-                'visible_interfaz' => true,
-                'orden_visualizacion' => 3,
-                'validaciones' => json_encode(['min' => 50.0, 'max' => 100.0])
-            ],
+        // Limpiar tabla antes de poblar (opcional)
+        // DB::table('parametros')->truncate();
 
-            // Configuraciones de Alertas
+        $parametros = [
+            // Parámetros de Validaciones
             [
-                'categoria' => 'ALERTAS',
-                'clave' => 'enviar_notificaciones_email',
-                'nombre' => 'Enviar notificaciones por email',
-                'descripcion' => 'Activar o desactivar el envío de notificaciones por correo electrónico',
-                'tipo' => 'BOOLEAN',
-                'valor' => 'true',
-                'valor_por_defecto' => 'true',
+                'categoria' => 'VALIDACIONES',
+                'clave' => 'max_dias_validacion',
+                'nombre' => 'Máximo días para validación',
+                'descripcion' => 'Número máximo de días permitidos para completar una validación de conductor',
+                'tipo' => 'INTEGER',
+                'valor' => '7',
+                'valor_por_defecto' => '5',
+                'opciones' => null,
                 'modificable' => true,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 1
             ],
             [
-                'categoria' => 'ALERTAS',
-                'clave' => 'hora_ejecucion_validaciones',
-                'nombre' => 'Hora de ejecución de validaciones',
-                'descripcion' => 'Hora diaria para ejecutar validaciones automáticas',
-                'tipo' => 'TIME',
-                'valor' => '08:00',
-                'valor_por_defecto' => '08:00',
+                'categoria' => 'VALIDACIONES',
+                'clave' => 'validacion_automatica',
+                'nombre' => 'Validación automática activa',
+                'descripcion' => 'Activar el sistema de validaciones automáticas para conductores',
+                'tipo' => 'BOOLEAN',
+                'valor' => 'true',
+                'valor_por_defecto' => 'true',
+                'opciones' => json_encode(['true', 'false']),
                 'modificable' => true,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 2
             ],
             [
-                'categoria' => 'ALERTAS',
-                'clave' => 'retener_notificaciones_dias',
-                'nombre' => 'Días de retención de notificaciones',
-                'descripcion' => 'Número de días para mantener notificaciones antes de eliminarlas automáticamente',
-                'tipo' => 'INTEGER',
-                'valor' => '30',
-                'valor_por_defecto' => '30',
+                'categoria' => 'VALIDACIONES',
+                'clave' => 'umbral_critico',
+                'nombre' => 'Umbral crítico de validaciones',
+                'descripcion' => 'Porcentaje de validaciones fallidas que activa alertas críticas',
+                'tipo' => 'DECIMAL',
+                'valor' => '15.50',
+                'valor_por_defecto' => '20.00',
+                'opciones' => null,
                 'modificable' => true,
                 'visible_interfaz' => true,
-                'orden_visualizacion' => 3,
-                'validaciones' => json_encode(['min' => 7, 'max' => 365])
+                'orden_visualizacion' => 3
+            ],
+            [
+                'categoria' => 'VALIDACIONES',
+                'clave' => 'tipos_validacion_requeridos',
+                'nombre' => 'Tipos de validación requeridos',
+                'descripcion' => 'Lista de tipos de validación que son obligatorios',
+                'tipo' => 'JSON',
+                'valor' => '["LICENCIA", "ANTECEDENTES", "EXAMEN_MEDICO"]',
+                'valor_por_defecto' => '["LICENCIA", "ANTECEDENTES"]',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 4
             ],
 
-            // Configuraciones de Reportes
+            // Parámetros de Reportes
             [
                 'categoria' => 'REPORTES',
-                'clave' => 'formato_fecha_reportes',
+                'clave' => 'formato_fecha',
                 'nombre' => 'Formato de fecha en reportes',
                 'descripcion' => 'Formato de fecha utilizado en los reportes generados',
                 'tipo' => 'STRING',
@@ -112,12 +90,39 @@ class ParametroSeeder extends Seeder
                 'tipo' => 'BOOLEAN',
                 'valor' => 'true',
                 'valor_por_defecto' => 'true',
+                'opciones' => json_encode(['true', 'false']),
                 'modificable' => true,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 2
             ],
+            [
+                'categoria' => 'REPORTES',
+                'clave' => 'hora_generacion_reportes',
+                'nombre' => 'Hora de generación de reportes',
+                'descripcion' => 'Hora diaria para generar reportes automáticos',
+                'tipo' => 'TIME',
+                'valor' => '06:00:00',
+                'valor_por_defecto' => '06:00:00',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 3
+            ],
+            [
+                'categoria' => 'REPORTES',
+                'clave' => 'incluir_graficos',
+                'nombre' => 'Incluir gráficos en reportes',
+                'descripcion' => 'Agregar gráficos estadísticos a los reportes PDF',
+                'tipo' => 'BOOLEAN',
+                'valor' => 'true',
+                'valor_por_defecto' => 'false',
+                'opciones' => json_encode(['true', 'false']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 4
+            ],
 
-            // Configuraciones Generales
+            // Parámetros Generales
             [
                 'categoria' => 'GENERAL',
                 'clave' => 'nombre_empresa',
@@ -126,6 +131,7 @@ class ParametroSeeder extends Seeder
                 'tipo' => 'STRING',
                 'valor' => 'SIPAT Transport',
                 'valor_por_defecto' => 'SIPAT Transport',
+                'opciones' => null,
                 'modificable' => true,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 1
@@ -145,9 +151,9 @@ class ParametroSeeder extends Seeder
             ],
             [
                 'categoria' => 'GENERAL',
-                'clave' => 'zona_horaria',
+                'clave' => 'timezone',
                 'nombre' => 'Zona horaria del sistema',
-                'descripcion' => 'Zona horaria utilizada para fechas y horas del sistema',
+                'descripcion' => 'Zona horaria utilizada por todo el sistema',
                 'tipo' => 'STRING',
                 'valor' => 'America/Lima',
                 'valor_por_defecto' => 'America/Lima',
@@ -156,16 +162,138 @@ class ParametroSeeder extends Seeder
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 3
             ],
+            [
+                'categoria' => 'GENERAL',
+                'clave' => 'modo_mantenimiento',
+                'nombre' => 'Modo de mantenimiento',
+                'descripcion' => 'Activar modo de mantenimiento para el sistema',
+                'tipo' => 'BOOLEAN',
+                'valor' => 'false',
+                'valor_por_defecto' => 'false',
+                'opciones' => json_encode(['true', 'false']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 4
+            ],
 
-            // Configuraciones de Sistema (no modificables)
+            // Parámetros de Conductores
+            [
+                'categoria' => 'CONDUCTORES',
+                'clave' => 'max_dias_inactividad',
+                'nombre' => 'Máximo días de inactividad',
+                'descripcion' => 'Días máximos sin actividad antes de marcar conductor como inactivo',
+                'tipo' => 'INTEGER',
+                'valor' => '30',
+                'valor_por_defecto' => '30',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 1
+            ],
+            [
+                'categoria' => 'CONDUCTORES',
+                'clave' => 'renovacion_automatica_licencia',
+                'nombre' => 'Renovación automática de licencia',
+                'descripcion' => 'Enviar recordatorios automáticos para renovación de licencias',
+                'tipo' => 'BOOLEAN',
+                'valor' => 'true',
+                'valor_por_defecto' => 'true',
+                'opciones' => json_encode(['true', 'false']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 2
+            ],
+            [
+                'categoria' => 'CONDUCTORES',
+                'clave' => 'score_minimo_operacion',
+                'nombre' => 'Score mínimo para operación',
+                'descripcion' => 'Puntuación mínima requerida para que un conductor pueda operar',
+                'tipo' => 'DECIMAL',
+                'valor' => '75.00',
+                'valor_por_defecto' => '70.00',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 3
+            ],
+            [
+                'categoria' => 'CONDUCTORES',
+                'clave' => 'edad_maxima_operacion',
+                'nombre' => 'Edad máxima para operación',
+                'descripcion' => 'Edad máxima permitida para conductores activos',
+                'tipo' => 'INTEGER',
+                'valor' => '65',
+                'valor_por_defecto' => '65',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 4
+            ],
+
+            // Parámetros de Alertas
+            [
+                'categoria' => 'ALERTAS',
+                'clave' => 'activar_notificaciones_email',
+                'nombre' => 'Activar notificaciones por email',
+                'descripcion' => 'Enviar alertas importantes por correo electrónico',
+                'tipo' => 'BOOLEAN',
+                'valor' => 'true',
+                'valor_por_defecto' => 'true',
+                'opciones' => json_encode(['true', 'false']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 1
+            ],
+            [
+                'categoria' => 'ALERTAS',
+                'clave' => 'nivel_alerta_defecto',
+                'nombre' => 'Nivel de alerta por defecto',
+                'descripcion' => 'Nivel de severidad por defecto para nuevas alertas',
+                'tipo' => 'STRING',
+                'valor' => 'ADVERTENCIA',
+                'valor_por_defecto' => 'INFO',
+                'opciones' => json_encode(['INFO', 'ADVERTENCIA', 'CRITICA']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 2
+            ],
+            [
+                'categoria' => 'ALERTAS',
+                'clave' => 'tiempo_retencion_alertas',
+                'nombre' => 'Tiempo de retención de alertas',
+                'descripcion' => 'Días que se mantienen las alertas en el sistema antes de archivarse',
+                'tipo' => 'INTEGER',
+                'valor' => '90',
+                'valor_por_defecto' => '90',
+                'opciones' => null,
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 3
+            ],
+            [
+                'categoria' => 'ALERTAS',
+                'clave' => 'frecuencia_notificaciones',
+                'nombre' => 'Frecuencia de notificaciones',
+                'descripcion' => 'Con qué frecuencia enviar resúmenes de alertas',
+                'tipo' => 'STRING',
+                'valor' => 'DIARIA',
+                'valor_por_defecto' => 'DIARIA',
+                'opciones' => json_encode(['INMEDIATA', 'DIARIA', 'SEMANAL']),
+                'modificable' => true,
+                'visible_interfaz' => true,
+                'orden_visualizacion' => 4
+            ],
+
+            // Parámetros del Sistema (No modificables)
             [
                 'categoria' => 'SISTEMA',
-                'clave' => 'version_sistema',
-                'nombre' => 'Versión del sistema',
+                'clave' => 'version_aplicacion',
+                'nombre' => 'Versión de la aplicación',
                 'descripcion' => 'Versión actual del sistema SIPAT',
                 'tipo' => 'STRING',
                 'valor' => '1.0.0',
                 'valor_por_defecto' => '1.0.0',
+                'opciones' => null,
                 'modificable' => false,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 1
@@ -176,18 +304,65 @@ class ParametroSeeder extends Seeder
                 'nombre' => 'Fecha de instalación',
                 'descripcion' => 'Fecha en que se instaló el sistema',
                 'tipo' => 'DATE',
-                'valor' => now()->toDateString(),
-                'valor_por_defecto' => now()->toDateString(),
+                'valor' => now()->format('Y-m-d'),
+                'valor_por_defecto' => now()->format('Y-m-d'),
+                'opciones' => null,
                 'modificable' => false,
                 'visible_interfaz' => true,
                 'orden_visualizacion' => 2
+            ],
+            [
+                'categoria' => 'SISTEMA',
+                'clave' => 'clave_encriptacion',
+                'nombre' => 'Clave de encriptación',
+                'descripcion' => 'Clave utilizada para encriptar datos sensibles',
+                'tipo' => 'STRING',
+                'valor' => 'sistema_interno_no_modificar',
+                'valor_por_defecto' => 'sistema_interno_no_modificar',
+                'opciones' => null,
+                'modificable' => false,
+                'visible_interfaz' => false,
+                'orden_visualizacion' => 99
             ]
         ];
 
-        foreach ($parametros as $parametro) {
-            Parametro::create($parametro);
+        // Insertar parámetros uno por uno para manejar errores individualmente
+        foreach ($parametros as $parametroData) {
+            try {
+                // Verificar si ya existe el parámetro
+                $existe = Parametro::where('clave', $parametroData['clave'])->first();
+
+                if (!$existe) {
+                    // Agregar timestamp y usuario creador
+                    $parametroData['created_at'] = now();
+                    $parametroData['updated_at'] = now();
+                    $parametroData['modificado_por'] = 1; // Asumiendo que el usuario admin tiene ID 1
+
+                    Parametro::create($parametroData);
+
+                    echo "✅ Parámetro creado: {$parametroData['clave']}\n";
+                } else {
+                    echo "⚠️  Parámetro ya existe: {$parametroData['clave']}\n";
+                }
+
+            } catch (\Exception $e) {
+                echo "❌ Error creando parámetro {$parametroData['clave']}: " . $e->getMessage() . "\n";
+            }
         }
 
-        $this->command->info('✅ Parámetros del sistema creados exitosamente');
+        echo "\n🎉 Seeder de parámetros completado!\n";
+        echo "📊 Total de parámetros en el sistema: " . Parametro::count() . "\n";
+        echo "📋 Categorías disponibles: " . Parametro::distinct('categoria')->count() . "\n";
+
+        // Mostrar resumen por categoría
+        $resumen = Parametro::selectRaw('categoria, count(*) as total')
+                            ->groupBy('categoria')
+                            ->orderBy('categoria')
+                            ->get();
+
+        echo "\n📈 Resumen por categoría:\n";
+        foreach ($resumen as $item) {
+            echo "   • {$item->categoria}: {$item->total} parámetros\n";
+        }
     }
 }

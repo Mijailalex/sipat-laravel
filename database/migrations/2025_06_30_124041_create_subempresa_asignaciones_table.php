@@ -23,7 +23,8 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['fecha_asignacion', 'estado']);
-            $table->unique(['frecuencia_id', 'conductor_id', 'fecha_asignacion']);
+            // Nombre más corto para el índice único
+            $table->unique(['frecuencia_id', 'conductor_id', 'fecha_asignacion'], 'sub_asig_freq_cond_fecha_unique');
         });
     }
 

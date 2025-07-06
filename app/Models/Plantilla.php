@@ -34,17 +34,17 @@ class Plantilla extends Model
     // Relaciones
     public function creadoPor()
     {
-        return $this->belongsTo(User::class, 'creado_por');
+        return $this->belongsTo(\App\Models\User::class, 'creado_por');
     }
 
     public function turnos()
     {
-        return $this->hasMany(Turno::class);
+        return $this->hasMany(\App\Models\Turno::class);
     }
 
     public function plantillaTurnos()
     {
-        return $this->hasMany(PlantillaTurno::class);
+        return $this->hasMany(\App\Models\PlantillaTurno::class);
     }
 
     // Scopes
@@ -85,10 +85,6 @@ class Plantilla extends Model
     {
         $fecha = $fecha ?: now();
 
-        if (!$this->activa) {
-            return false;
-        }
-
         if ($this->fecha_vigencia_desde && $fecha < $this->fecha_vigencia_desde) {
             return false;
         }
@@ -97,299 +93,282 @@ class Plantilla extends Model
             return false;
         }
 
-        return true;
+        return $this->activa;
     }
 
-    public function getTotalTurnosAttribute()
+    public function obtenerTurnosConfigurados()
     {
-        return count($this->configuracion_turnos);
+        return $this->configuracion_turnos ?: [];
     }
 
-    public function getConductoresRequeridosAttribute()
+    public function obtenerParametrosEspeciales()
     {
-        return collect($this->configuracion_turnos)
-            ->sum('conductores_requeridos');
-    }
-
-    public function getHorasPorDiaAttribute()
-    {
-        $totalMinutos = collect($this->configuracion_turnos)
-            ->sum(function ($turno) {
-                $inicio = Carbon::parse($turno['hora_inicio']);
-                $fin = Carbon::parse($turno['hora_fin']);
-                return $inicio->diffInMinutes($fin);
-            });
-
-        return round($totalMinutos / 60, 2);
-    }
-
-    public function generarTurnos($fechaInicio, $fechaFin, $conductores = [])
-    {
-        $fechaActual = Carbon::parse($fechaInicio);
-        $fechaFinal = Carbon::parse($fechaFin);
-        $turnosCreados = [];
-
-        while ($fechaActual <= $fechaFinal) {
-            $turnosDia = $this->generarTurnosPorDia($fechaActual, $conductores);
-            $turnosCreados = array_merge($turnosCreados, $turnosDia);
-            $fechaActual->addDay();
-        }
-
-        return $turnosCreados;
-    }
-
-    private function generarTurnosPorDia($fecha, $conductores = [])
-    {
-        $turnosCreados = [];
-        $conductoresDisponibles = collect($conductores);
-
-        foreach ($this->configuracion_turnos as $configuracion) {
-            // Verificar si el turno aplica para este día
-            if (!$this->turnoAplicaParaDia($configuracion, $fecha)) {
-                continue;
-            }
-
-            $conductoresRequeridos = $configuracion['conductores_requeridos'] ?? 1;
-
-            for ($i = 0; $i < $conductoresRequeridos; $i++) {
-                $conductor = $this->seleccionarConductor($conductoresDisponibles, $configuracion);
-
-                $turno = Turno::create([
-                    'plantilla_id' => $this->id,
-                    'conductor_id' => $conductor ? $conductor->id : null,
-                    'fecha_turno' => $fecha->toDateString(),
-                    'hora_inicio' => $configuracion['hora_inicio'],
-                    'hora_fin' => $configuracion['hora_fin'],
-                    'tipo_turno' => $configuracion['tipo'] ?? 'REGULAR',
-                    'ruta_asignada' => $configuracion['ruta'] ?? null,
-                    'origen_conductor' => $configuracion['origen'] ?? null,
-                    'estado' => 'PROGRAMADO'
-                ]);
-
-                $turnosCreados[] = $turno;
-
-                // Remover conductor de disponibles para evitar duplicados
-                if ($conductor) {
-                    $conductoresDisponibles = $conductoresDisponibles->reject(function ($c) use ($conductor) {
-                        return $c->id === $conductor->id;
-                    });
-                }
-            }
-        }
-
-        return $turnosCreados;
-    }
-
-    private function turnoAplicaParaDia($configuracion, $fecha)
-    {
-        if (!isset($configuracion['dias_semana'])) {
-            return true; // Sin restricciones de días
-        }
-
-        $diaSemana = $fecha->dayOfWeek; // 0 = Domingo, 1 = Lunes, etc.
-        $diasConfiguracion = $configuracion['dias_semana'];
-
-        // Convertir días de texto a números si es necesario
-        if (is_array($diasConfiguracion) && isset($diasConfiguracion[0]) && is_string($diasConfiguracion[0])) {
-            $mapaDias = [
-                'domingo' => 0, 'lunes' => 1, 'martes' => 2, 'miercoles' => 3,
-                'jueves' => 4, 'viernes' => 5, 'sabado' => 6
-            ];
-
-            $diasConfiguracion = array_map(function ($dia) use ($mapaDias) {
-                return $mapaDias[strtolower($dia)] ?? $dia;
-            }, $diasConfiguracion);
-        }
-
-        return in_array($diaSemana, $diasConfiguracion);
-    }
-
-    private function seleccionarConductor($conductoresDisponibles, $configuracion)
-    {
-        if ($conductoresDisponibles->isEmpty()) {
-            return null;
-        }
-
-        // Filtrar por requisitos especiales
-        $conductoresFiltrados = $conductoresDisponibles;
-
-        if (isset($configuracion['requisitos'])) {
-            foreach ($configuracion['requisitos'] as $requisito => $valor) {
-                switch ($requisito) {
-                    case 'turno_preferido':
-                        $conductoresFiltrados = $conductoresFiltrados->where('años_experiencia', '>=', $valor);
-                        break;
-                    case 'eficiencia_minima':
-                        $conductoresFiltrados = $conductoresFiltrados->where('eficiencia', '>=', $valor);
-                        break;
-                    case 'origen_requerido':
-                        $conductoresFiltrados = $conductoresFiltrados->where('origen_conductor', $valor);
-                        break;
-                }
-            }
-        }
-
-        // Si no hay conductores que cumplan requisitos, usar todos los disponibles
-        if ($conductoresFiltrados->isEmpty()) {
-            $conductoresFiltrados = $conductoresDisponibles;
-        }
-
-        // Seleccionar el mejor conductor basado en score
-        return $conductoresFiltrados->sortByDesc(function ($conductor) use ($configuracion) {
-            return $this->calcularScoreConductor($conductor, $configuracion);
-        })->first();
-    }
-
-    private function calcularScoreConductor($conductor, $configuracion)
-    {
-        $score = 0;
-
-        // Score base por eficiencia y puntualidad
-        $score += ($conductor->eficiencia * 0.4) + ($conductor->puntualidad * 0.4);
-
-        // Bonus por turno preferido
-        if (isset($configuracion['tipo']) && $conductor->turno_preferido === $configuracion['tipo']) {
-            $score += 10;
-        }
-
-        // Bonus por origen coincidente
-        if (isset($configuracion['origen']) && $conductor->origen_conductor === $configuracion['origen']) {
-            $score += 10;
-        }
-
-        // Penalización por días acumulados
-        $score -= $conductor->dias_acumulados * 2;
-
-        return $score;
-    }
-
-    public function clonar($nuevoNombre, $nuevoCodigo = null)
-    {
-        $nuevoCodigo = $nuevoCodigo ?: $this->codigo . '_COPIA_' . time();
-
-        return static::create([
-            'nombre' => $nuevoNombre,
-            'codigo' => $nuevoCodigo,
-            'descripcion' => $this->descripcion . ' (Copia)',
-            'tipo' => $this->tipo,
-            'configuracion_turnos' => $this->configuracion_turnos,
-            'parametros_especiales' => $this->parametros_especiales,
-            'activa' => false, // Las copias inician inactivas
-            'creado_por' => auth()->id(),
-            'fecha_vigencia_desde' => null,
-            'fecha_vigencia_hasta' => null
-        ]);
+        return $this->parametros_especiales ?: [];
     }
 
     public function validarConfiguracion()
     {
         $errores = [];
 
-        // Validar estructura básica
-        if (empty($this->configuracion_turnos)) {
-            $errores[] = 'La plantilla debe tener al menos un turno configurado';
+        if (!$this->configuracion_turnos || !is_array($this->configuracion_turnos)) {
+            $errores[] = 'La configuración de turnos es requerida';
+            return $errores;
         }
 
-        // Validar cada turno
         foreach ($this->configuracion_turnos as $index => $turno) {
-            $numeroTurno = $index + 1;
-
-            if (empty($turno['hora_inicio'])) {
-                $errores[] = "Turno {$numeroTurno}: Hora de inicio requerida";
+            if (!isset($turno['nombre']) || empty($turno['nombre'])) {
+                $errores[] = "Turno #{$index}: Nombre requerido";
             }
 
-            if (empty($turno['hora_fin'])) {
-                $errores[] = "Turno {$numeroTurno}: Hora de fin requerida";
+            if (!isset($turno['hora_inicio'])) {
+                $errores[] = "Turno #{$index}: Hora de inicio requerida";
             }
 
-            if (!empty($turno['hora_inicio']) && !empty($turno['hora_fin'])) {
+            if (!isset($turno['hora_fin'])) {
+                $errores[] = "Turno #{$index}: Hora de fin requerida";
+            }
+
+            if (isset($turno['hora_inicio']) && isset($turno['hora_fin'])) {
                 $inicio = Carbon::parse($turno['hora_inicio']);
                 $fin = Carbon::parse($turno['hora_fin']);
 
                 if ($fin <= $inicio) {
-                    $errores[] = "Turno {$numeroTurno}: La hora de fin debe ser posterior a la hora de inicio";
+                    $errores[] = "Turno #{$index}: La hora de fin debe ser posterior a la hora de inicio";
                 }
             }
 
-            if (isset($turno['conductores_requeridos']) && $turno['conductores_requeridos'] < 1) {
-                $errores[] = "Turno {$numeroTurno}: Debe requerir al menos 1 conductor";
+            if (!isset($turno['conductores_requeridos']) || $turno['conductores_requeridos'] < 1) {
+                $errores[] = "Turno #{$index}: Debe requerir al menos 1 conductor";
             }
         }
 
-        // Validar solapamientos de turnos
-        $this->validarSolapamientos($errores);
-
         if (!empty($errores)) {
-            throw new \Exception(implode('. ', $errores));
+            throw new \InvalidArgumentException(implode(', ', $errores));
         }
 
         return true;
     }
 
-    private function validarSolapamientos(&$errores)
+    public function calcularCostoEstimado()
     {
-        $turnos = collect($this->configuracion_turnos);
+        $costoTotal = 0;
+        $salarioBasePorHora = 15; // S/. por hora base
 
-        for ($i = 0; $i < $turnos->count(); $i++) {
-            for ($j = $i + 1; $j < $turnos->count(); $j++) {
-                $turno1 = $turnos[$i];
-                $turno2 = $turnos[$j];
+        foreach ($this->obtenerTurnosConfigurados() as $turno) {
+            $horaInicio = Carbon::parse($turno['hora_inicio']);
+            $horaFin = Carbon::parse($turno['hora_fin']);
+            $horas = $horaInicio->diffInHours($horaFin);
 
-                $inicio1 = Carbon::parse($turno1['hora_inicio']);
-                $fin1 = Carbon::parse($turno1['hora_fin']);
-                $inicio2 = Carbon::parse($turno2['hora_inicio']);
-                $fin2 = Carbon::parse($turno2['hora_fin']);
+            $conductores = $turno['conductores_requeridos'] ?? 1;
+            $factor = $turno['factor_pago'] ?? 1.0;
 
-                // Verificar solapamiento
-                if ($inicio1 < $fin2 && $inicio2 < $fin1) {
-                    $errores[] = "Los turnos " . ($i + 1) . " y " . ($j + 1) . " tienen horarios solapados";
-                }
+            $costoTurno = $horas * $salarioBasePorHora * $conductores * $factor;
+            $costoTotal += $costoTurno;
+        }
+
+        return $costoTotal;
+    }
+
+    public function filtrarConductoresPorParametros($conductores, $parametros = null)
+    {
+        if (!$parametros) {
+            $parametros = $this->obtenerParametrosEspeciales();
+        }
+
+        $conductoresFiltrados = $conductores;
+
+        foreach ($parametros as $parametro => $valor) {
+            switch ($parametro) {
+                case 'experiencia_minima':
+                    $conductoresFiltrados = $conductoresFiltrados->where('experiencia_años', '>=', $valor);
+                    break;
+                case 'eficiencia_minima':
+                    $conductoresFiltrados = $conductoresFiltrados->where('eficiencia', '>=', $valor);
+                    break;
+                case 'puntualidad_minima':
+                    $conductoresFiltrados = $conductoresFiltrados->where('puntualidad', '>=', $valor);
+                    break;
+                case 'turno_preferido':
+                    $conductoresFiltrados = $conductoresFiltrados->where('turno_preferido', $valor);
+                    break;
+                case 'licencia_requerida':
+                    $conductoresFiltrados = $conductoresFiltrados->where('tipo_licencia', $valor);
+                    break;
+                case 'zona_residencia':
+                    $conductoresFiltrados = $conductoresFiltrados->where('zona_residencia', $valor);
+                    break;
+                default:
+                    // Parámetro no reconocido, ignorar
+                    break;
             }
         }
+
+        return $conductoresFiltrados;
     }
 
     public function obtenerEstadisticasUso($dias = 30)
     {
-        $turnos = $this->turnos()
-            ->where('fecha_turno', '>=', now()->subDays($dias))
-            ->get();
+        try {
+            $turnos = $this->turnos()
+                ->where('fecha_turno', '>=', now()->subDays($dias))
+                ->get();
 
-        $turnosCompletados = $turnos->where('estado', 'COMPLETADO');
+            $turnosCompletados = $turnos->where('estado', 'COMPLETADO');
 
-        return [
-            'total_turnos_generados' => $turnos->count(),
-            'turnos_completados' => $turnosCompletados->count(),
-            'porcentaje_eficiencia' => $turnos->count() > 0
-                ? round(($turnosCompletados->count() / $turnos->count()) * 100, 2)
-                : 0,
-            'conductores_diferentes' => $turnos->pluck('conductor_id')->unique()->count(),
-            'dias_utilizados' => $turnos->pluck('fecha_turno')->unique()->count(),
-            'promedio_turnos_dia' => $turnos->pluck('fecha_turno')->unique()->count() > 0
-                ? round($turnos->count() / $turnos->pluck('fecha_turno')->unique()->count(), 2)
-                : 0,
-            'horas_totales_programadas' => $turnos->sum('horas_trabajadas'),
-            'eficiencia_promedio_conductores' => $turnosCompletados->avg('eficiencia_turno') ?: 0
-        ];
+            return [
+                'total_turnos_generados' => $turnos->count(),
+                'turnos_completados' => $turnosCompletados->count(),
+                'porcentaje_eficiencia' => $turnos->count() > 0
+                    ? round(($turnosCompletados->count() / $turnos->count()) * 100, 2)
+                    : 0,
+                'conductores_diferentes' => $turnos->pluck('conductor_id')->unique()->count(),
+                'dias_utilizados' => $turnos->pluck('fecha_turno')->unique()->count(),
+                'promedio_turnos_dia' => $turnos->pluck('fecha_turno')->unique()->count() > 0
+                    ? round($turnos->count() / $turnos->pluck('fecha_turno')->unique()->count(), 2)
+                    : 0,
+                'horas_totales_programadas' => $turnos->sum('horas_trabajadas'),
+                'eficiencia_promedio_conductores' => $turnosCompletados->avg('eficiencia_turno') ?: 0
+            ];
+        } catch (\Exception $e) {
+            return [
+                'total_turnos_generados' => 0,
+                'turnos_completados' => 0,
+                'porcentaje_eficiencia' => 0,
+                'conductores_diferentes' => 0,
+                'dias_utilizados' => 0,
+                'promedio_turnos_dia' => 0,
+                'horas_totales_programadas' => 0,
+                'eficiencia_promedio_conductores' => 0
+            ];
+        }
     }
 
     public static function obtenerMasUtilizadas($limite = 5, $dias = 30)
     {
-        return static::withCount([
-                'turnos as total_turnos' => function ($query) use ($dias) {
-                    $query->where('fecha_turno', '>=', now()->subDays($dias));
+        try {
+            return static::withCount([
+                    'turnos as total_turnos' => function ($query) use ($dias) {
+                        $query->where('fecha_turno', '>=', now()->subDays($dias));
+                    }
+                ])
+                ->activas()
+                ->having('total_turnos', '>', 0)
+                ->orderBy('total_turnos', 'desc')
+                ->limit($limite)
+                ->get();
+        } catch (\Exception $e) {
+            return collect([]);
+        }
+    }
+
+    public function clonar($nuevoNombre, $nuevoCodigo = null)
+    {
+        $nuevaPlantilla = $this->replicate();
+        $nuevaPlantilla->nombre = $nuevoNombre;
+        $nuevaPlantilla->codigo = $nuevoCodigo;
+        $nuevaPlantilla->activa = false;
+        $nuevaPlantilla->fecha_vigencia_desde = null;
+        $nuevaPlantilla->fecha_vigencia_hasta = null;
+
+        $nuevaPlantilla->save();
+
+        // Clonar plantilla turnos si existen
+        foreach ($this->plantillaTurnos as $plantillaTurno) {
+            $nuevoPlantillaTurno = $plantillaTurno->replicate();
+            $nuevoPlantillaTurno->plantilla_id = $nuevaPlantilla->id;
+            $nuevoPlantillaTurno->save();
+        }
+
+        return $nuevaPlantilla;
+    }
+
+    public function generarTurnos($fechaInicio, $fechaFin, $conductores = null)
+    {
+        $turnosGenerados = [];
+        $fechaActual = Carbon::parse($fechaInicio);
+        $fechaLimite = Carbon::parse($fechaFin);
+
+        if (!$conductores) {
+            $conductores = \App\Models\Conductor::disponibles()->get();
+        }
+
+        while ($fechaActual <= $fechaLimite) {
+            foreach ($this->obtenerTurnosConfigurados() as $turnoConfig) {
+                $diasSemana = $turnoConfig['dias_semana'] ?? [1, 2, 3, 4, 5, 6, 7];
+
+                if (in_array($fechaActual->dayOfWeek, $diasSemana)) {
+                    $conductoresFiltrados = $this->filtrarConductoresPorParametros($conductores, $turnoConfig['parametros'] ?? []);
+
+                    for ($i = 0; $i < ($turnoConfig['conductores_requeridos'] ?? 1); $i++) {
+                        $conductorAsignado = $conductoresFiltrados->where('disponible_fecha', $fechaActual->toDateString())->first();
+
+                        $turno = new \App\Models\Turno([
+                            'plantilla_id' => $this->id,
+                            'conductor_id' => $conductorAsignado ? $conductorAsignado->id : null,
+                            'fecha_turno' => $fechaActual->toDateString(),
+                            'hora_inicio' => $turnoConfig['hora_inicio'],
+                            'hora_fin' => $turnoConfig['hora_fin'],
+                            'tipo_turno' => $turnoConfig['tipo'] ?? 'REGULAR',
+                            'ruta_asignada' => $turnoConfig['ruta'] ?? null,
+                            'origen_conductor' => $turnoConfig['origen_conductor'] ?? null,
+                            'estado' => 'PROGRAMADO'
+                        ]);
+
+                        $turno->save();
+                        $turnosGenerados[] = $turno;
+                    }
                 }
-            ])
-            ->activas()
-            ->having('total_turnos', '>', 0)
-            ->orderBy('total_turnos', 'desc')
-            ->limit($limite)
-            ->get();
+            }
+
+            $fechaActual->addDay();
+        }
+
+        return $turnosGenerados;
+    }
+
+    public function verificarSolapamientos()
+    {
+        $errores = [];
+        $turnos = $this->obtenerTurnosConfigurados();
+
+        for ($i = 0; $i < count($turnos); $i++) {
+            for ($j = $i + 1; $j < count($turnos); $j++) {
+                $turno1 = $turnos[$i];
+                $turno2 = $turnos[$j];
+
+                // Verificar si tienen días en común
+                $diasComunes = array_intersect(
+                    $turno1['dias_semana'] ?? [],
+                    $turno2['dias_semana'] ?? []
+                );
+
+                if (!empty($diasComunes)) {
+                    $inicio1 = Carbon::parse($turno1['hora_inicio']);
+                    $fin1 = Carbon::parse($turno1['hora_fin']);
+                    $inicio2 = Carbon::parse($turno2['hora_inicio']);
+                    $fin2 = Carbon::parse($turno2['hora_fin']);
+
+                    // Verificar solapamiento de horarios
+                    if (($inicio1 < $fin2) && ($inicio2 < $fin1)) {
+                        $errores[] = "Los turnos " . ($i + 1) . " y " . ($j + 1) . " tienen horarios solapados";
+                    }
+                }
+            }
+        }
+
+        return $errores;
     }
 
     public function activar($fechaVigencia = null)
     {
         // Validar antes de activar
         $this->validarConfiguracion();
+
+        // Verificar solapamientos
+        $solapamientos = $this->verificarSolapamientos();
+        if (!empty($solapamientos)) {
+            throw new \InvalidArgumentException('No se puede activar: ' . implode(', ', $solapamientos));
+        }
 
         $this->update([
             'activa' => true,
@@ -434,7 +413,4 @@ class Plantilla extends Model
             }
         });
     }
-}->where('turno_preferido', $valor);
-                        break;
-                    case 'experiencia_minima':
-                        $conductoresFiltrados = $conductoresFiltrados
+}

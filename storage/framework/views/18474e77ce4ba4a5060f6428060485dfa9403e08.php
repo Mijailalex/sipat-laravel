@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="csrf-token" content="<?php echo e(csrf_token()); ?>">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
 
-    <title>@yield('title', 'SIPAT - Sistema de Planificación y Administración de Transporte')</title>
+    <title><?php echo $__env->yieldContent('title', 'SIPAT - Sistema de Planificación y Administración de Transporte'); ?></title>
 
     <!-- Bootstrap CSS 5.3.0 -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -715,12 +715,12 @@
     .main-content { z-index: 100 !important; }
     </style>
 
-    @yield('styles')
+    <?php echo $__env->yieldContent('styles'); ?>
 </head>
 <body>
     <!-- Navbar -->
     <nav class="navbar navbar-dark fixed-top bg-dark flex-md-nowrap p-0 shadow">
-        <a class="navbar-brand col-md-3 col-lg-2 me-0 px-3" href="{{ route('dashboard') }}">
+        <a class="navbar-brand col-md-3 col-lg-2 me-0 px-3" href="<?php echo e(route('dashboard')); ?>">
             <i class="fas fa-bus me-2"></i> SIPAT
         </a>
 
@@ -740,32 +740,32 @@
                 <div class="sidebar-sticky pt-3">
                     <ul class="nav flex-column">
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('dashboard') || request()->is('/') ? 'active' : '' }}" href="{{ route('dashboard') }}">
+                            <a class="nav-link <?php echo e(request()->is('dashboard') || request()->is('/') ? 'active' : ''); ?>" href="<?php echo e(route('dashboard')); ?>">
                                 <i class="fas fa-tachometer-alt"></i> Dashboard
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('conductores*') ? 'active' : '' }}" href="{{ route('conductores.index') }}">
+                            <a class="nav-link <?php echo e(request()->is('conductores*') ? 'active' : ''); ?>" href="<?php echo e(route('conductores.index')); ?>">
                                 <i class="fas fa-users"></i> Conductores
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('validaciones*') ? 'active' : '' }}" href="{{ route('validaciones.index') }}">
+                            <a class="nav-link <?php echo e(request()->is('validaciones*') ? 'active' : ''); ?>" href="<?php echo e(route('validaciones.index')); ?>">
                                 <i class="fas fa-check-circle"></i> Validaciones
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('plantillas*') ? 'active' : '' }}" href="{{ route('plantillas.index') }}">
+                            <a class="nav-link <?php echo e(request()->is('plantillas*') ? 'active' : ''); ?>" href="<?php echo e(route('plantillas.index')); ?>">
                                 <i class="fas fa-calendar-alt"></i> Plantillas
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('parametros*') ? 'active' : '' }}" href="{{ route('parametros.index') }}">
+                            <a class="nav-link <?php echo e(request()->is('parametros*') ? 'active' : ''); ?>" href="<?php echo e(route('parametros.index')); ?>">
                                 <i class="fas fa-cogs"></i> Parámetros
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ request()->is('reportes*') ? 'active' : '' }}" href="{{ route('reportes.index') }}">
+                            <a class="nav-link <?php echo e(request()->is('reportes*') ? 'active' : ''); ?>" href="<?php echo e(route('reportes.index')); ?>">
                                 <i class="fas fa-chart-line"></i> Reportes
                             </a>
                         </li>
@@ -780,13 +780,15 @@
                             <div class="d-flex justify-content-between mb-1">
                                 <span>Conductores Activos:</span>
                                 <span class="text-success fw-bold">
-                                    {{ \App\Models\Conductor::where('estado', 'DISPONIBLE')->count() }}
+                                    <?php echo e(\App\Models\Conductor::where('estado', 'DISPONIBLE')->count()); ?>
+
                                 </span>
                             </div>
                             <div class="d-flex justify-content-between mb-1">
                                 <span>Validaciones:</span>
                                 <span class="text-warning fw-bold">
-                                    {{ \App\Models\Validacion::where('estado', 'PENDIENTE')->count() }}
+                                    <?php echo e(\App\Models\Validacion::where('estado', 'PENDIENTE')->count()); ?>
+
                                 </span>
                             </div>
                             <div class="d-flex justify-content-between">
@@ -801,40 +803,44 @@
             <!-- Main content -->
             <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
                 <!-- Alert Messages -->
-                @if(session('success'))
+                <?php if(session('success')): ?>
                     <div class="alert alert-success alert-dismissible fade show" role="alert">
                         <i class="fas fa-check-circle me-2"></i>
-                        {{ session('success') }}
+                        <?php echo e(session('success')); ?>
+
                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                     </div>
-                @endif
+                <?php endif; ?>
 
-                @if(session('error'))
+                <?php if(session('error')): ?>
                     <div class="alert alert-danger alert-dismissible fade show" role="alert">
                         <i class="fas fa-exclamation-circle me-2"></i>
-                        {{ session('error') }}
+                        <?php echo e(session('error')); ?>
+
                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                     </div>
-                @endif
+                <?php endif; ?>
 
-                @if(session('warning'))
+                <?php if(session('warning')): ?>
                     <div class="alert alert-warning alert-dismissible fade show" role="alert">
                         <i class="fas fa-exclamation-triangle me-2"></i>
-                        {{ session('warning') }}
+                        <?php echo e(session('warning')); ?>
+
                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                     </div>
-                @endif
+                <?php endif; ?>
 
-                @if(session('info'))
+                <?php if(session('info')): ?>
                     <div class="alert alert-info alert-dismissible fade show" role="alert">
                         <i class="fas fa-info-circle me-2"></i>
-                        {{ session('info') }}
+                        <?php echo e(session('info')); ?>
+
                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                     </div>
-                @endif
+                <?php endif; ?>
 
                 <!-- Main Content Area -->
-                @yield('content')
+                <?php echo $__env->yieldContent('content'); ?>
             </main>
         </div>
     </div>
@@ -849,7 +855,7 @@
     <script>
         // Set CSRF token for AJAX requests
         window.Laravel = {
-            csrfToken: '{{ csrf_token() }}'
+            csrfToken: '<?php echo e(csrf_token()); ?>'
         };
 
         // Auto-hide alerts after 5 seconds
@@ -864,6 +870,7 @@
         });
     </script>
 
-    @yield('scripts')
+    <?php echo $__env->yieldContent('scripts'); ?>
 </body>
 </html>
+<?php /**PATH C:\xampp\htdocs\sipat-laravel\resources\views/layouts/app.blade.php ENDPATH**/ ?>

@@ -25,7 +25,8 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['conductor_id', 'estado']);
-            $table->index(['fecha_inicio_descanso', 'fecha_fin_descanso']);
+            // Usar nombre más corto para el índice
+            $table->index(['fecha_inicio_descanso', 'fecha_fin_descanso'], 'plan_desc_fechas_idx');
         });
     }
 
