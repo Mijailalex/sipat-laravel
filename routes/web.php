@@ -55,6 +55,7 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/backup/ejecutar', [DashboardController::class, 'ejecutarBackup'])->name('ejecutar.backup');
         Route::get('/estado-sistema', [DashboardController::class, 'estadoSistema'])->name('estado.sistema');
         Route::get('/metricas', [DashboardController::class, 'metricas'])->name('metricas');
+        Route::get('/chart-data', [DashboardController::class, 'getChartData'])->name('chart-data');
         Route::post('/limpiar-cache', [DashboardController::class, 'limpiarCache'])->name('limpiar.cache');
     });
 
@@ -88,79 +89,136 @@ Route::middleware(['auth'])->group(function () {
     Route::prefix('planificacion')->name('planificacion.')->group(function () {
         Route::get('/', [PlantillaController::class, 'index'])->name('index');
         Route::get('/crear', [PlantillaController::class, 'crear'])->name('crear');
-        Route::post('/generar-automatica', [PlantillaController::class, 'generarAutomatica'])->name('generar.automatica');
-        Route::post('/generar-manual', [PlantillaController::class, 'generarManual'])->name('generar.manual');
+        Route::post('/ejecutar', [PlantillaController::class, 'ejecutar'])->name('ejecutar');
+        Route::get('/historial', [PlantillaController::class, 'historial'])->name('historial');
+        Route::post('/optimizar', [PlantillaController::class, 'optimizar'])->name('optimizar');
 
         // Gestión de plantillas
-        Route::get('/plantilla/{plantilla}', [PlantillaController::class, 'show'])->name('plantilla.show');
-        Route::put('/plantilla/{plantilla}', [PlantillaController::class, 'update'])->name('plantilla.update');
-        Route::delete('/plantilla/{plantilla}', [PlantillaController::class, 'destroy'])->name('plantilla.destroy');
-        Route::post('/plantilla/{plantilla}/finalizar', [PlantillaController::class, 'finalizar'])->name('plantilla.finalizar');
-        Route::post('/plantilla/{plantilla}/duplicar', [PlantillaController::class, 'duplicar'])->name('plantilla.duplicar');
+        Route::get('/plantillas', [PlantillaController::class, 'plantillas'])->name('plantillas');
+        Route::post('/plantillas', [PlantillaController::class, 'guardarPlantilla'])->name('plantillas.guardar');
+        Route::get('/plantillas/{plantilla}/editar', [PlantillaController::class, 'editarPlantilla'])->name('plantillas.editar');
+        Route::put('/plantillas/{plantilla}', [PlantillaController::class, 'actualizarPlantilla'])->name('plantillas.actualizar');
+        Route::delete('/plantillas/{plantilla}', [PlantillaController::class, 'eliminarPlantilla'])->name('plantillas.eliminar');
 
-        // Exportación de plantillas
-        Route::get('/plantilla/{plantilla}/pdf', [PlantillaController::class, 'exportarPDF'])->name('plantilla.pdf');
-        Route::get('/plantilla/{plantilla}/excel', [PlantillaController::class, 'exportarExcel'])->name('plantilla.excel');
+        // Validaciones de planificación
+        Route::get('/validaciones', [PlantillaController::class, 'validaciones'])->name('validaciones');
+        Route::post('/validaciones/ejecutar', [PlantillaController::class, 'ejecutarValidaciones'])->name('validaciones.ejecutar');
 
-        // Configuración de algoritmos
-        Route::get('/configuracion', [PlantillaController::class, 'configuracion'])->name('configuracion');
-        Route::post('/configuracion', [PlantillaController::class, 'guardarConfiguracion'])->name('configuracion.guardar');
-
-        // Simulaciones y pruebas
-        Route::post('/simular', [PlantillaController::class, 'simular'])->name('simular');
-        Route::get('/historial-algoritmo', [PlantillaController::class, 'historialAlgoritmo'])->name('historial.algoritmo');
+        // Replanificación
+        Route::get('/replanificar', [ReplanificacionController::class, 'index'])->name('replanificar');
+        Route::post('/replanificar/ejecutar', [ReplanificacionController::class, 'ejecutar'])->name('replanificar.ejecutar');
+        Route::get('/replanificar/historial', [ReplanificacionController::class, 'historial'])->name('replanificar.historial');
     });
 
     // =============================================================================
-    // REPLANIFICACIÓN Y CAMBIOS
-    // =============================================================================
-
-    Route::prefix('replanificacion')->name('replanificacion.')->group(function () {
-        Route::get('/', [ReplanificacionController::class, 'index'])->name('index');
-        Route::get('/crear', [ReplanificacionController::class, 'crear'])->name('crear');
-
-        // Replanificación de turnos individuales
-        Route::post('/turno/{turno}/reasignar', [ReplanificacionController::class, 'reasignarTurno'])->name('turno.reasignar');
-        Route::post('/turno/{turno}/cancelar', [ReplanificacionController::class, 'cancelarTurno'])->name('turno.cancelar');
-        Route::post('/ejecutar-turno', [ReplanificacionController::class, 'ejecutarReplanificacionTurno'])->name('ejecutar.turno');
-
-        // Replanificación automática
-        Route::post('/automatica', [ReplanificacionController::class, 'replanificarAutomatico'])->name('automatica');
-        Route::get('/sugerencias/{plantilla}', [ReplanificacionController::class, 'obtenerSugerencias'])->name('sugerencias');
-
-        // Gestión de emergencias
-        Route::post('/emergencia', [ReplanificacionController::class, 'replanificacionEmergencia'])->name('emergencia');
-        Route::get('/conductores-emergencia', [ReplanificacionController::class, 'conductoresEmergencia'])->name('conductores.emergencia');
-
-        // Historial y backup
-        Route::get('/historial/{plantilla}', [ReplanificacionController::class, 'historialCambios'])->name('historial');
-        Route::get('/backup', [ReplanificacionController::class, 'gestionBackup'])->name('backup');
-        Route::post('/backup/crear', [ReplanificacionController::class, 'crearBackup'])->name('backup.crear');
-        Route::post('/backup/restaurar', [ReplanificacionController::class, 'restaurarBackup'])->name('backup.restaurar');
-    });
-
-    // =============================================================================
-    // VALIDACIONES Y CONTROL DE CALIDAD
+    // SISTEMA DE VALIDACIONES
     // =============================================================================
 
     Route::prefix('validaciones')->name('validaciones.')->group(function () {
         Route::get('/', [ValidacionController::class, 'index'])->name('index');
+        Route::get('/crear', [ValidacionController::class, 'crear'])->name('crear');
+        Route::post('/', [ValidacionController::class, 'store'])->name('store');
         Route::get('/{validacion}', [ValidacionController::class, 'show'])->name('show');
+        Route::put('/{validacion}', [ValidacionController::class, 'update'])->name('update');
+        Route::delete('/{validacion}', [ValidacionController::class, 'destroy'])->name('destroy');
+
+        // Acciones sobre validaciones
         Route::post('/{validacion}/resolver', [ValidacionController::class, 'resolver'])->name('resolver');
         Route::post('/{validacion}/ignorar', [ValidacionController::class, 'ignorar'])->name('ignorar');
+        Route::post('/accion-masiva', [ValidacionController::class, 'accionMasiva'])->name('accion.masiva');
 
-        // Gestión masiva de validaciones
-        Route::post('/resolver-masivo', [ValidacionController::class, 'resolverMasivo'])->name('resolver.masivo');
-        Route::post('/ignorar-masivo', [ValidacionController::class, 'ignorarMasivo'])->name('ignorar.masivo');
-        Route::post('/ejecutar-todas', [ValidacionController::class, 'ejecutarTodasValidaciones'])->name('ejecutar.todas');
+        // Filtros y búsquedas
+        Route::get('/filtrar/{tipo}', [ValidacionController::class, 'filtrar'])->name('filtrar');
+        Route::get('/buscar', [ValidacionController::class, 'buscar'])->name('buscar');
+        Route::get('/exportar', [ValidacionController::class, 'exportar'])->name('exportar');
 
         // Configuración de validaciones
-        Route::get('/configuracion/reglas', [ValidacionController::class, 'configuracionReglas'])->name('configuracion.reglas');
-        Route::post('/configuracion/reglas', [ValidacionController::class, 'guardarReglas'])->name('configuracion.reglas.guardar');
+        Route::get('/configuracion', [ValidacionController::class, 'configuracion'])->name('configuracion');
+        Route::post('/configuracion', [ValidacionController::class, 'guardarConfiguracion'])->name('configuracion.guardar');
+    });
+
+    // =============================================================================
+    // GESTIÓN DE RUTAS CORTAS
+    // =============================================================================
+
+    Route::prefix('rutas-cortas')->name('rutas-cortas.')->group(function () {
+        Route::get('/', [RutaController::class, 'index'])->name('index');
+        Route::get('/crear', [RutaController::class, 'crear'])->name('crear');
+        Route::post('/', [RutaController::class, 'store'])->name('store');
+        Route::get('/{ruta}', [RutaController::class, 'show'])->name('show');
+        Route::get('/{ruta}/editar', [RutaController::class, 'edit'])->name('edit');
+        Route::put('/{ruta}', [RutaController::class, 'update'])->name('update');
+        Route::delete('/{ruta}', [RutaController::class, 'destroy'])->name('destroy');
+
+        // Asignación de conductores
+        Route::post('/{ruta}/asignar-conductor', [RutaController::class, 'asignarConductor'])->name('asignar.conductor');
+        Route::post('/{ruta}/cambiar-conductor', [RutaController::class, 'cambiarConductor'])->name('cambiar.conductor');
+
+        // Reportes y análisis
+        Route::get('/reportes/conductor/{conductor}', [RutaController::class, 'reporteConductor'])->name('reporte.conductor');
+        Route::get('/reportes/balance', [RutaController::class, 'reporteBalance'])->name('reporte.balance');
+        Route::get('/analisis/rentabilidad', [RutaController::class, 'analisisRentabilidad'])->name('analisis.rentabilidad');
+
+        // Configuración de tramos
+        Route::get('/configuracion/tramos', [RutaController::class, 'configuracionTramos'])->name('configuracion.tramos');
+        Route::post('/configuracion/tramos', [RutaController::class, 'guardarConfiguracionTramos'])->name('configuracion.tramos.guardar');
+    });
+
+    // =============================================================================
+    // REPORTES AVANZADOS
+    // =============================================================================
+
+    Route::prefix('reportes')->name('reportes.')->group(function () {
+        Route::get('/', [ReporteController::class, 'index'])->name('index');
+
+        // Reportes de conductores
+        Route::get('/conductores', [ReporteController::class, 'conductores'])->name('conductores');
+        Route::get('/conductores/rendimiento', [ReporteController::class, 'rendimientoConductores'])->name('conductores.rendimiento');
+        Route::get('/conductores/disponibilidad', [ReporteController::class, 'disponibilidadConductores'])->name('conductores.disponibilidad');
+        Route::get('/conductores/descansos', [ReporteController::class, 'descansosConductores'])->name('conductores.descansos');
+
+        // Reportes operativos
+        Route::get('/operativos/cobertura', [ReporteController::class, 'coberturaOperativa'])->name('operativos.cobertura');
+        Route::get('/operativos/eficiencia', [ReporteController::class, 'eficienciaOperativa'])->name('operativos.eficiencia');
+        Route::get('/operativos/puntualidad', [ReporteController::class, 'puntualidadOperativa'])->name('operativos.puntualidad');
+
+        // Reportes financieros
+        Route::get('/financieros/ingresos', [ReporteController::class, 'reporteIngresos'])->name('financieros.ingresos');
+        Route::get('/financieros/costos', [ReporteController::class, 'reporteCostos'])->name('financieros.costos');
+        Route::get('/financieros/rentabilidad', [ReporteController::class, 'reporteRentabilidad'])->name('financieros.rentabilidad');
 
         // Reportes de validaciones
-        Route::get('/reporte/eficiencia', [ValidacionController::class, 'reporteEficiencia'])->name('reporte.eficiencia');
-        Route::get('/reporte/tendencias', [ValidacionController::class, 'reporteTendencias'])->name('reporte.tendencias');
+        Route::get('/validaciones/resumen', [ReporteController::class, 'resumenValidaciones'])->name('validaciones.resumen');
+        Route::get('/validaciones/tendencias', [ReporteController::class, 'tendenciasValidaciones'])->name('validaciones.tendencias');
+
+        // Exportación de reportes
+        Route::post('/exportar/{tipo}', [ReporteController::class, 'exportar'])->name('exportar');
+        Route::get('/programados', [ReporteController::class, 'reportesProgramados'])->name('programados');
+        Route::post('/programar', [ReporteController::class, 'programarReporte'])->name('programar');
+    });
+
+    // =============================================================================
+    // GESTIÓN DE NOTIFICACIONES
+    // =============================================================================
+
+    Route::prefix('notificaciones')->name('notificaciones.')->group(function () {
+        Route::get('/', [NotificacionController::class, 'index'])->name('index');
+        Route::get('/crear', [NotificacionController::class, 'crear'])->name('crear');
+        Route::post('/', [NotificacionController::class, 'store'])->name('store');
+        Route::get('/{notificacion}', [NotificacionController::class, 'show'])->name('show');
+        Route::put('/{notificacion}', [NotificacionController::class, 'update'])->name('update');
+        Route::delete('/{notificacion}', [NotificacionController::class, 'destroy'])->name('destroy');
+
+        // Acciones sobre notificaciones
+        Route::post('/{notificacion}/marcar-leida', [NotificacionController::class, 'marcarLeida'])->name('marcar.leida');
+        Route::post('/marcar-todas-leidas', [NotificacionController::class, 'marcarTodasLeidas'])->name('marcar.todas.leidas');
+        Route::post('/limpiar-antiguas', [NotificacionController::class, 'limpiarAntiguas'])->name('limpiar.antiguas');
+
+        // Configuración de notificaciones
+        Route::get('/configuracion', [NotificacionController::class, 'configuracion'])->name('configuracion');
+        Route::post('/configuracion', [NotificacionController::class, 'guardarConfiguracion'])->name('configuracion.guardar');
+        Route::get('/plantillas', [NotificacionController::class, 'plantillas'])->name('plantillas');
+        Route::post('/plantillas', [NotificacionController::class, 'guardarPlantilla'])->name('plantillas.guardar');
     });
 
     // =============================================================================
@@ -220,216 +278,175 @@ Route::middleware(['auth'])->group(function () {
     Route::prefix('backups')->name('backups.')->group(function () {
         Route::get('/', [BackupController::class, 'index'])->name('index');
         Route::post('/crear', [BackupController::class, 'crear'])->name('crear');
-        Route::get('/{backup}/descargar', [BackupController::class, 'descargar'])->name('descargar');
+        Route::post('/restaurar', [BackupController::class, 'restaurar'])->name('restaurar');
         Route::delete('/{backup}', [BackupController::class, 'eliminar'])->name('eliminar');
+        Route::get('/{backup}/descargar', [BackupController::class, 'descargar'])->name('descargar');
 
-        // Restauración de backups
-        Route::get('/restaurar', [BackupController::class, 'mostrarRestaurar'])->name('restaurar');
-        Route::post('/restaurar', [BackupController::class, 'ejecutarRestaurar'])->name('restaurar.ejecutar');
-        Route::get('/restaurar/{backup}/preview', [BackupController::class, 'previewRestaurar'])->name('restaurar.preview');
-
-        // Configuración de backups automáticos
+        // Configuración de backups
         Route::get('/configuracion', [BackupController::class, 'configuracion'])->name('configuracion');
         Route::post('/configuracion', [BackupController::class, 'guardarConfiguracion'])->name('configuracion.guardar');
-
-        // Monitoreo y estadísticas
-        Route::get('/estadisticas', [BackupController::class, 'estadisticas'])->name('estadisticas');
-        Route::get('/logs', [BackupController::class, 'logs'])->name('logs');
+        Route::post('/programar', [BackupController::class, 'programar'])->name('programar');
+        Route::get('/historial', [BackupController::class, 'historial'])->name('historial');
+        Route::post('/verificar-integridad', [BackupController::class, 'verificarIntegridad'])->name('verificar.integridad');
     });
 
     // =============================================================================
-    // REPORTES AVANZADOS
+    // ADMINISTRACIÓN DE USUARIOS
     // =============================================================================
 
-    Route::prefix('reportes')->name('reportes.')->group(function () {
-        Route::get('/', [ReporteController::class, 'index'])->name('index');
+    Route::prefix('admin')->name('admin.')->group(function () {
 
-        // Reportes de conductores
-        Route::get('/conductores/rendimiento', [ReporteController::class, 'rendimientoConductores'])->name('conductores.rendimiento');
-        Route::get('/conductores/disponibilidad', [ReporteController::class, 'disponibilidadConductores'])->name('conductores.disponibilidad');
-        Route::get('/conductores/eficiencia', [ReporteController::class, 'eficienciaConductores'])->name('conductores.eficiencia');
+        // Gestión de credenciales y usuarios
+        Route::prefix('credenciales')->name('credenciales.')->group(function () {
+            Route::get('/', [CredencialesController::class, 'index'])->name('index');
+            Route::get('/crear', [CredencialesController::class, 'crear'])->name('crear');
+            Route::post('/', [CredencialesController::class, 'almacenar'])->name('almacenar');
+            Route::get('/{usuario}/editar', [CredencialesController::class, 'editar'])->name('editar');
+            Route::put('/{usuario}', [CredencialesController::class, 'actualizar'])->name('actualizar');
+            Route::delete('/{usuario}', [CredencialesController::class, 'eliminar'])->name('eliminar');
 
-        // Reportes de planificación
-        Route::get('/planificacion/cobertura', [ReporteController::class, 'coberturaPlanificacion'])->name('planificacion.cobertura');
-        Route::get('/planificacion/optimizacion', [ReporteController::class, 'optimizacionPlanificacion'])->name('planificacion.optimizacion');
-        Route::get('/planificacion/tendencias', [ReporteController::class, 'tendenciasPlanificacion'])->name('planificacion.tendencias');
+            // Gestión de contraseñas
+            Route::post('/{usuario}/password', [CredencialesController::class, 'cambiarPassword'])->name('cambiar.password');
+            Route::post('/{usuario}/reset-password', [CredencialesController::class, 'resetPassword'])->name('reset.password');
 
-        // Reportes ejecutivos
-        Route::get('/ejecutivo/mensual', [ReporteController::class, 'ejecutivoMensual'])->name('ejecutivo.mensual');
-        Route::get('/ejecutivo/trimestral', [ReporteController::class, 'ejecutivoTrimestral'])->name('ejecutivo.trimestral');
-        Route::get('/ejecutivo/anual', [ReporteController::class, 'ejecutivoAnual'])->name('ejecutivo.anual');
+            // Gestión de estados de usuario
+            Route::post('/{usuario}/toggle-estado', [CredencialesController::class, 'toggleEstado'])->name('toggle.estado');
+            Route::post('/{usuario}/bloquear', [CredencialesController::class, 'bloquear'])->name('bloquear');
+            Route::post('/{usuario}/desbloquear', [CredencialesController::class, 'desbloquear'])->name('desbloquear');
 
-        // Exportación de reportes
-        Route::post('/exportar', [ReporteController::class, 'exportar'])->name('exportar');
-        Route::get('/programados', [ReporteController::class, 'programados'])->name('programados');
-        Route::post('/programar', [ReporteController::class, 'programar'])->name('programar');
+            // Historial y auditoría
+            Route::get('/{usuario}/historial', [CredencialesController::class, 'historial'])->name('historial');
+            Route::get('/reporte-seguridad', [CredencialesController::class, 'reporteSeguridad'])->name('reporte.seguridad');
+            Route::get('/exportar-auditoria', [CredencialesController::class, 'exportarAuditoria'])->name('exportar.auditoria');
+        });
+
+        // Gestión de roles y permisos
+        Route::prefix('roles')->name('roles.')->group(function () {
+            Route::get('/', [RolController::class, 'index'])->name('index');
+            Route::post('/', [RolController::class, 'store'])->name('store');
+            Route::get('/{rol}/editar', [RolController::class, 'edit'])->name('edit');
+            Route::put('/{rol}', [RolController::class, 'update'])->name('update');
+            Route::delete('/{rol}', [RolController::class, 'destroy'])->name('destroy');
+
+            Route::get('/permisos', [RolController::class, 'permisos'])->name('permisos');
+            Route::post('/permisos', [RolController::class, 'guardarPermisos'])->name('permisos.guardar');
+        });
+
+        // Configuración avanzada del sistema
+        Route::prefix('sistema')->name('sistema.')->group(function () {
+            Route::get('/configuracion-avanzada', [SistemaController::class, 'configuracionAvanzada'])->name('configuracion.avanzada');
+            Route::post('/configuracion-avanzada', [SistemaController::class, 'guardarConfiguracionAvanzada'])->name('configuracion.avanzada.guardar');
+
+            Route::get('/logs-sistema', [SistemaController::class, 'logsSistema'])->name('logs');
+            Route::get('/monitoreo', [SistemaController::class, 'monitoreo'])->name('monitoreo');
+            Route::get('/diagnosticos', [SistemaController::class, 'diagnosticos'])->name('diagnosticos');
+
+            Route::post('/reiniciar-servicios', [SistemaController::class, 'reiniciarServicios'])->name('reiniciar.servicios');
+            Route::post('/limpiar-sistema', [SistemaController::class, 'limpiarSistema'])->name('limpiar.sistema');
+        });
+
+        // Gestión de base de datos
+        Route::prefix('database')->name('database.')->group(function () {
+            Route::get('/estado', [DatabaseController::class, 'estado'])->name('estado');
+            Route::get('/optimizar', [DatabaseController::class, 'optimizar'])->name('optimizar');
+            Route::post('/optimizar/ejecutar', [DatabaseController::class, 'ejecutarOptimizacion'])->name('optimizar.ejecutar');
+
+            Route::get('/migraciones', [DatabaseController::class, 'migraciones'])->name('migraciones');
+            Route::post('/migraciones/ejecutar', [DatabaseController::class, 'ejecutarMigraciones'])->name('migraciones.ejecutar');
+
+            Route::get('/semillas', [DatabaseController::class, 'semillas'])->name('semillas');
+            Route::post('/semillas/ejecutar', [DatabaseController::class, 'ejecutarSemillas'])->name('semillas.ejecutar');
+        });
     });
 
+    // =============================================================================
+    // RUTAS DE API PÚBLICAS (CON AUTENTICACIÓN)
+    // =============================================================================
+
+    Route::middleware(['auth:sanctum'])->prefix('api/v1')->name('api.v1.')->group(function () {
+
+        // API de conductores
+        Route::apiResource('conductores', ConductorApiController::class);
+        Route::get('/conductores/{conductor}/metricas', [ConductorApiController::class, 'metricas'])->name('conductores.metricas');
+        Route::get('/conductores-disponibles', [ConductorApiController::class, 'disponibles'])->name('conductores.disponibles');
+
+        // API de planificación
+        Route::prefix('planificacion')->name('planificacion.')->group(function () {
+            Route::post('/ejecutar', [PlanificacionApiController::class, 'ejecutar'])->name('ejecutar');
+            Route::get('/estado', [PlanificacionApiController::class, 'estado'])->name('estado');
+            Route::get('/historial', [PlanificacionApiController::class, 'historial'])->name('historial');
+        });
+
+        // API de validaciones
+        Route::apiResource('validaciones', ValidacionApiController::class);
+        Route::post('/validaciones/{validacion}/resolver', [ValidacionApiController::class, 'resolver'])->name('validaciones.resolver');
+
+        // API de rutas cortas
+        Route::apiResource('rutas-cortas', RutaApiController::class);
+        Route::post('/rutas-cortas/{ruta}/asignar', [RutaApiController::class, 'asignar'])->name('rutas-cortas.asignar');
+
+        // API de reportes
+        Route::prefix('reportes')->name('reportes.')->group(function () {
+            Route::get('/conductores', [ReporteApiController::class, 'conductores'])->name('conductores');
+            Route::get('/validaciones', [ReporteApiController::class, 'validaciones'])->name('validaciones');
+            Route::get('/rutas-cortas', [ReporteApiController::class, 'rutasCortas'])->name('rutas-cortas');
+        });
+
+        // API de notificaciones
+        Route::prefix('notificaciones')->name('notificaciones.')->group(function () {
+            Route::get('/', [NotificacionApiController::class, 'index'])->name('index');
+            Route::post('/marcar-leida/{notificacion}', [NotificacionApiController::class, 'marcarLeida'])->name('marcar.leida');
+        });
+    });
+
+    // =============================================================================
+    // RUTAS DE ARCHIVOS Y DESCARGAS
+    // =============================================================================
+
+    Route::prefix('archivos')->name('archivos.')->group(function () {
+        Route::get('/plantilla/{plantilla}/pdf', [ArchivoController::class, 'plantillaPDF'])->name('plantilla.pdf');
+        Route::get('/plantilla/{plantilla}/excel', [ArchivoController::class, 'plantillaExcel'])->name('plantilla.excel');
+        Route::get('/reporte/{reporte}/descargar', [ArchivoController::class, 'descargarReporte'])->name('reporte.descargar');
+        Route::get('/backup/{backup}/descargar', [ArchivoController::class, 'descargarBackup'])->name('backup.descargar');
+        Route::get('/logs/{fecha}/descargar', [ArchivoController::class, 'descargarLogs'])->name('logs.descargar');
+    });
+
+    // =============================================================================
+    // RUTAS DE AYUDA Y DOCUMENTACIÓN
+    // =============================================================================
+
+    Route::prefix('ayuda')->name('ayuda.')->group(function () {
+        Route::get('/', [AyudaController::class, 'index'])->name('index');
+        Route::get('/manual-usuario', [AyudaController::class, 'manualUsuario'])->name('manual.usuario');
+        Route::get('/manual-administrador', [AyudaController::class, 'manualAdministrador'])->name('manual.administrador');
+        Route::get('/faq', [AyudaController::class, 'faq'])->name('faq');
+        Route::get('/soporte', [AyudaController::class, 'soporte'])->name('soporte');
+        Route::post('/ticket-soporte', [AyudaController::class, 'crearTicketSoporte'])->name('ticket.soporte');
+    });
+
+    // =============================================================================
+    // RUTAS DE DESARROLLO (SOLO EN ENTORNO LOCAL)
+    // =============================================================================
+
+    if (app()->environment('local')) {
+        Route::prefix('dev')->name('dev.')->group(function () {
+            Route::get('/test-db', [DevController::class, 'testDB'])->name('test.db');
+            Route::get('/test-cache', [DevController::class, 'testCache'])->name('test.cache');
+            Route::get('/test-queue', [DevController::class, 'testQueue'])->name('test.queue');
+            Route::get('/generate-data', [DevController::class, 'generateData'])->name('generate.data');
+            Route::get('/reset-system', [DevController::class, 'resetSystem'])->name('reset.system');
+        });
+    }
 });
 
 // =============================================================================
-// RUTAS EXCLUSIVAS PARA ADMINISTRADORES
+// RUTAS ADICIONALES PARA FUNCIONAMIENTO COMPLETO
 // =============================================================================
 
-Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->group(function () {
+// Ruta alternativa para chart-data (compatibilidad)
+Route::middleware(['auth'])->get('/dashboard/chart-data', [DashboardController::class, 'getChartData'])->name('dashboard.chart-data');
 
-    // Gestión de credenciales y usuarios
-    Route::prefix('credenciales')->name('credenciales.')->group(function () {
-        Route::get('/', [CredencialesController::class, 'index'])->name('index');
-        Route::get('/crear', [CredencialesController::class, 'crear'])->name('crear');
-        Route::post('/', [CredencialesController::class, 'almacenar'])->name('almacenar');
-        Route::get('/{usuario}/editar', [CredencialesController::class, 'editar'])->name('editar');
-        Route::put('/{usuario}', [CredencialesController::class, 'actualizar'])->name('actualizar');
-        Route::delete('/{usuario}', [CredencialesController::class, 'eliminar'])->name('eliminar');
-
-        // Gestión de contraseñas
-        Route::post('/{usuario}/password', [CredencialesController::class, 'cambiarPassword'])->name('cambiar.password');
-        Route::post('/{usuario}/reset-password', [CredencialesController::class, 'resetPassword'])->name('reset.password');
-
-        // Gestión de estados de usuario
-        Route::post('/{usuario}/toggle-estado', [CredencialesController::class, 'toggleEstado'])->name('toggle.estado');
-        Route::post('/{usuario}/bloquear', [CredencialesController::class, 'bloquear'])->name('bloquear');
-        Route::post('/{usuario}/desbloquear', [CredencialesController::class, 'desbloquear'])->name('desbloquear');
-
-        // Historial y auditoría
-        Route::get('/{usuario}/historial', [CredencialesController::class, 'historial'])->name('historial');
-        Route::get('/reporte-seguridad', [CredencialesController::class, 'reporteSeguridad'])->name('reporte.seguridad');
-        Route::get('/exportar-auditoria', [CredencialesController::class, 'exportarAuditoria'])->name('exportar.auditoria');
-    });
-
-    // Gestión de roles y permisos
-    Route::prefix('roles')->name('roles.')->group(function () {
-        Route::get('/', [RolController::class, 'index'])->name('index');
-        Route::post('/', [RolController::class, 'store'])->name('store');
-        Route::get('/{rol}/editar', [RolController::class, 'edit'])->name('edit');
-        Route::put('/{rol}', [RolController::class, 'update'])->name('update');
-        Route::delete('/{rol}', [RolController::class, 'destroy'])->name('destroy');
-
-        Route::get('/permisos', [RolController::class, 'permisos'])->name('permisos');
-        Route::post('/permisos', [RolController::class, 'guardarPermisos'])->name('permisos.guardar');
-    });
-
-    // Configuración avanzada del sistema
-    Route::prefix('sistema')->name('sistema.')->group(function () {
-        Route::get('/configuracion-avanzada', [SistemaController::class, 'configuracionAvanzada'])->name('configuracion.avanzada');
-        Route::post('/configuracion-avanzada', [SistemaController::class, 'guardarConfiguracionAvanzada'])->name('configuracion.avanzada.guardar');
-
-        Route::get('/logs-sistema', [SistemaController::class, 'logsSistema'])->name('logs');
-        Route::get('/monitoreo', [SistemaController::class, 'monitoreo'])->name('monitoreo');
-        Route::get('/diagnosticos', [SistemaController::class, 'diagnosticos'])->name('diagnosticos');
-
-        Route::post('/reiniciar-servicios', [SistemaController::class, 'reiniciarServicios'])->name('reiniciar.servicios');
-        Route::post('/limpiar-sistema', [SistemaController::class, 'limpiarSistema'])->name('limpiar.sistema');
-    });
-
-    // Gestión de base de datos
-    Route::prefix('database')->name('database.')->group(function () {
-        Route::get('/estado', [DatabaseController::class, 'estado'])->name('estado');
-        Route::get('/optimizar', [DatabaseController::class, 'optimizar'])->name('optimizar');
-        Route::post('/optimizar/ejecutar', [DatabaseController::class, 'ejecutarOptimizacion'])->name('optimizar.ejecutar');
-
-        Route::get('/migraciones', [DatabaseController::class, 'migraciones'])->name('migraciones');
-        Route::post('/migraciones/ejecutar', [DatabaseController::class, 'ejecutarMigraciones'])->name('migraciones.ejecutar');
-
-        Route::get('/semillas', [DatabaseController::class, 'semillas'])->name('semillas');
-        Route::post('/semillas/ejecutar', [DatabaseController::class, 'ejecutarSemillas'])->name('semillas.ejecutar');
-    });
-});
-
-// =============================================================================
-// RUTAS DE API PÚBLICAS (CON AUTENTICACIÓN)
-// =============================================================================
-
-Route::middleware(['auth:sanctum'])->prefix('api/v1')->name('api.v1.')->group(function () {
-
-    // API de conductores
-    Route::apiResource('conductores', ConductorApiController::class);
-    Route::get('/conductores/{conductor}/metricas', [ConductorApiController::class, 'metricas'])->name('conductores.metricas');
-    Route::get('/conductores-disponibles', [ConductorApiController::class, 'disponibles'])->name('conductores.disponibles');
-
-    // API de planificación
-    Route::prefix('planificacion')->name('planificacion.')->group(function () {
-        Route::post('/ejecutar', [PlanificacionApiController::class, 'ejecutar'])->name('ejecutar');
-        Route::get('/estado/{plantilla}', [PlanificacionApiController::class, 'estado'])->name('estado');
-        Route::post('/simular', [PlanificacionApiController::class, 'simular'])->name('simular');
-    });
-
-    // API de validaciones
-    Route::apiResource('validaciones', ValidacionApiController::class)->only(['index', 'show', 'update']);
-    Route::post('/validaciones/ejecutar', [ValidacionApiController::class, 'ejecutar'])->name('validaciones.ejecutar');
-
-    // API de métricas y reportes
-    Route::prefix('metricas')->name('metricas.')->group(function () {
-        Route::get('/dashboard', [MetricasApiController::class, 'dashboard'])->name('dashboard');
-        Route::get('/conductores', [MetricasApiController::class, 'conductores'])->name('conductores');
-        Route::get('/planificacion', [MetricasApiController::class, 'planificacion'])->name('planificacion');
-        Route::get('/sistema', [MetricasApiController::class, 'sistema'])->name('sistema');
-    });
-});
-
-// =============================================================================
-// RUTAS DE WEBHOOK Y NOTIFICACIONES
-// =============================================================================
-
-Route::prefix('webhooks')->name('webhooks.')->group(function () {
-    Route::post('/planificacion-completada', [WebhookController::class, 'planificacionCompletada'])->name('planificacion.completada');
-    Route::post('/backup-realizado', [WebhookController::class, 'backupRealizado'])->name('backup.realizado');
-    Route::post('/alerta-seguridad', [WebhookController::class, 'alertaSeguridad'])->name('alerta.seguridad');
-});
-
-// =============================================================================
-// RUTAS DE ARCHIVOS Y DESCARGAS
-// =============================================================================
-
-Route::middleware(['auth'])->prefix('archivos')->name('archivos.')->group(function () {
-    Route::get('/plantilla/{plantilla}/pdf', [ArchivoController::class, 'plantillaPDF'])->name('plantilla.pdf');
-    Route::get('/plantilla/{plantilla}/excel', [ArchivoController::class, 'plantillaExcel'])->name('plantilla.excel');
-    Route::get('/reporte/{reporte}/descargar', [ArchivoController::class, 'descargarReporte'])->name('reporte.descargar');
-    Route::get('/backup/{backup}/descargar', [ArchivoController::class, 'descargarBackup'])->name('backup.descargar');
-    Route::get('/logs/{fecha}/descargar', [ArchivoController::class, 'descargarLogs'])->name('logs.descargar');
-});
-
-// =============================================================================
-// RUTAS DE AYUDA Y DOCUMENTACIÓN
-// =============================================================================
-
-Route::middleware(['auth'])->prefix('ayuda')->name('ayuda.')->group(function () {
-    Route::get('/', [AyudaController::class, 'index'])->name('index');
-    Route::get('/manual-usuario', [AyudaController::class, 'manualUsuario'])->name('manual.usuario');
-    Route::get('/manual-administrador', [AyudaController::class, 'manualAdministrador'])->name('manual.administrador');
-    Route::get('/faq', [AyudaController::class, 'faq'])->name('faq');
-    Route::get('/soporte', [AyudaController::class, 'soporte'])->name('soporte');
-    Route::post('/ticket-soporte', [AyudaController::class, 'crearTicketSoporte'])->name('ticket.soporte');
-});
-
-// =============================================================================
-// RUTAS DE DESARROLLO (SOLO EN ENTORNO LOCAL)
-// =============================================================================
-
-if (app()->environment('local')) {
-    Route::prefix('dev')->name('dev.')->group(function () {
-        Route::get('/test-planificacion', [DevController::class, 'testPlanificacion'])->name('test.planificacion');
-        Route::get('/test-backup', [DevController::class, 'testBackup'])->name('test.backup');
-        Route::get('/test-notificaciones', [DevController::class, 'testNotificaciones'])->name('test.notificaciones');
-        Route::get('/generar-datos-prueba', [DevController::class, 'generarDatosPrueba'])->name('generar.datos.prueba');
-        Route::get('/limpiar-datos-prueba', [DevController::class, 'limpiarDatosPrueba'])->name('limpiar.datos.prueba');
-    });
-}
-
-// =============================================================================
-// REDIRECCIÓN DE RUTAS LEGACY
-// =============================================================================
-
-// Redirecciones para compatibilidad con versiones anteriores
-Route::redirect('/home', '/dashboard', 301);
-Route::redirect('/admin', '/admin/credenciales', 301);
-Route::redirect('/planificar', '/planificacion', 301);
-Route::redirect('/configuracion', '/configuracion/parametros', 301);
-
-// =============================================================================
-// FALLBACK PARA RUTAS NO ENCONTRADAS
-// =============================================================================
-
+// Rutas de fallback para desarrollo
 Route::fallback(function () {
-    return view('errors.404')->with('message', 'La página solicitada no existe en el sistema SIPAT.');
+    return redirect()->route('dashboard');
 });

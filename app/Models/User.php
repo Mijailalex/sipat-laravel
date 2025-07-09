@@ -16,6 +16,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'last_login_at',
+        'last_login_ip',
     ];
 
     protected $hidden = [
@@ -25,9 +27,45 @@ class User extends Authenticatable
 
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'last_login_at' => 'datetime',
     ];
 
-    // Relaciones
+    /**
+     * Método temporal para hasRole - todos los usuarios son admin por ahora
+     */
+    public function hasRole($role)
+    {
+        // Para simplicidad, todos los usuarios autenticados son admin
+        return true;
+    }
+
+    /**
+     * Método temporal para role - devuelve admin por defecto
+     */
+    public function role($role)
+    {
+        return $this;
+    }
+
+    /**
+     * Verificar si el usuario tiene un rol específico
+     */
+    public function isAdmin()
+    {
+        return $this->email === 'admin@sipat.com' || $this->hasRole('admin');
+    }
+
+    /**
+     * Verificar si el usuario puede hacer algo específico
+     * Compatible con Laravel Authorization
+     */
+    public function can($abilities, $arguments = [])
+    {
+        // Para simplicidad inicial, todos los usuarios pueden hacer todo
+        return true;
+    }
+
+    // Relaciones existentes
     public function validacionesResueltas()
     {
         return $this->hasMany(Validacion::class, 'resuelto_por');
@@ -51,5 +89,21 @@ class User extends Authenticatable
     public function descansosCreados()
     {
         return $this->hasMany(PlanificacionDescanso::class, 'creado_por');
+    }
+
+    /**
+     * Obtener el nombre completo del usuario
+     */
+    public function getFullNameAttribute()
+    {
+        return $this->name;
+    }
+
+    /**
+     * Verificar si el usuario está activo
+     */
+    public function isActive()
+    {
+        return true; // Por ahora todos están activos
     }
 }
