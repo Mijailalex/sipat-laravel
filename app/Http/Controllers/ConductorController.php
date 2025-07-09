@@ -3,12 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Models\Conductor;
-use App\Models\Validacion;
 use App\Models\ConductorBackup;
-use App\Imports\ConductoresImport;
+use App\Models\Validacion;
+use App\Imports\ConductorImport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Maatwebsite\Excel\Facades\Excel;
+use Carbon\Carbon;
 
 class ConductorController extends Controller
 {
@@ -16,18 +19,7 @@ class ConductorController extends Controller
     {
         $query = Conductor::query();
 
-        // Filtros
-        if ($request->filled('buscar')) {
-            $buscar = $request->buscar;
-            $query->where(function ($q) use ($buscar) {
-                $q->where('codigo_conductor', 'like', "%{$buscar}%")
-                  ->orWhere('nombre', 'like', "%{$buscar}%")
-                  ->orWhere('apellido', 'like', "%{$buscar}%")
-                  ->orWhere('dni', 'like', "%{$buscar}%")
-                  ->orWhere('licencia', 'like', "%{$buscar}%");
-            });
-        }
-
+        // Aplicar filtros
         if ($request->filled('estado')) {
             $query->where('estado', $request->estado);
         }
@@ -36,42 +28,46 @@ class ConductorController extends Controller
             $query->where('subempresa', $request->subempresa);
         }
 
-        if ($request->filled('filtro')) {
-            switch ($request->filtro) {
-                case 'criticos':
-                    $query->criticos();
-                    break;
-                case 'disponibles':
-                    $query->disponibles();
-                    break;
-                case 'descanso':
-                    $query->enDescanso();
-                    break;
-            }
+        if ($request->filled('buscar')) {
+            $buscar = $request->buscar;
+            $query->where(function($q) use ($buscar) {
+                $q->where('codigo_conductor', 'like', "%{$buscar}%")
+                  ->orWhere('nombre', 'like', "%{$buscar}%")
+                  ->orWhere('apellido', 'like', "%{$buscar}%")
+                  ->orWhere('dni', 'like', "%{$buscar}%")
+                  ->orWhere('licencia', 'like', "%{$buscar}%");
+            });
+        }
+
+        if ($request->filled('eficiencia_min')) {
+            $query->where('eficiencia', '>=', $request->eficiencia_min);
+        }
+
+        if ($request->filled('score_min')) {
+            $query->where('score_general', '>=', $request->score_min);
         }
 
         // Ordenamiento
-        $ordenPor = $request->get('orden_por', 'created_at');
-        $ordenDireccion = $request->get('orden_direccion', 'desc');
-        $query->orderBy($ordenPor, $ordenDireccion);
+        $sortBy = $request->get('sort_by', 'codigo_conductor');
+        $sortOrder = $request->get('sort_order', 'asc');
+        $query->orderBy($sortBy, $sortOrder);
 
-        $conductores = $query->paginate(20);
+        $conductores = $query->paginate(15)->withQueryString();
 
-        // Datos adicionales para la vista
+        // Estadísticas generales
         $estadisticas = [
             'total' => Conductor::count(),
-            'disponibles' => Conductor::disponibles()->count(),
-            'en_descanso' => Conductor::enDescanso()->count(),
-            'criticos' => Conductor::criticos()->count(),
-            'suspendidos' => Conductor::where('estado', 'SUSPENDIDO')->count()
+            'disponibles' => Conductor::where('estado', 'DISPONIBLE')->count(),
+            'descanso_fisico' => Conductor::where('estado', 'DESCANSO_FISICO')->count(),
+            'descanso_semanal' => Conductor::where('estado', 'DESCANSO_SEMANAL')->count(),
+            'vacaciones' => Conductor::where('estado', 'VACACIONES')->count(),
+            'suspendidos' => Conductor::where('estado', 'SUSPENDIDO')->count(),
+            'falta_operativo' => Conductor::where('estado', 'FALTA_OPERATIVO')->count(),
+            'falta_no_operativo' => Conductor::where('estado', 'FALTA_NO_OPERATIVO')->count()
         ];
 
-        // Métricas requeridas para la vista
+        // Métricas de rendimiento
         $metricas = [
-            'total' => Conductor::count(),
-            'conductores_activos' => Conductor::where('estado', 'DISPONIBLE')->count(),
-            'conductores_descanso' => Conductor::whereIn('estado', ['DESCANSO_FISICO', 'DESCANSO_SEMANAL'])->count(),
-            'conductores_criticos' => Conductor::where('dias_acumulados', '>=', 6)->count(),
             'puntualidad_promedio' => round(Conductor::where('estado', '!=', 'SUSPENDIDO')->avg('puntualidad') ?? 0, 1),
             'eficiencia_promedio' => round(Conductor::where('estado', '!=', 'SUSPENDIDO')->avg('eficiencia') ?? 0, 1),
             'validaciones_pendientes' => Validacion::where('estado', 'PENDIENTE')->count(),
@@ -150,55 +146,27 @@ class ConductorController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'codigo_conductor' => 'nullable|string|max:20|unique:conductores',
+            'codigo_conductor' => 'required|string|max:20|unique:conductores',
             'nombre' => 'required|string|max:100',
             'apellido' => 'required|string|max:100',
-            'dni' => 'required|string|size:8|unique:conductores',
-            'licencia' => 'required|string|max:20|unique:conductores',
-            'categoria_licencia' => 'nullable|string|max:10',
-            'fecha_vencimiento_licencia' => 'required|date|after:today',
-            'telefono' => 'nullable|string|max:15',
-            'email' => 'nullable|email|max:100',
-            'direccion' => 'nullable|string|max:200',
-            'fecha_nacimiento' => 'nullable|date|before:today',
-            'genero' => 'nullable|in:M,F,OTRO',
-            'contacto_emergencia' => 'nullable|string|max:100',
-            'telefono_emergencia' => 'nullable|string|max:15',
+            'dni' => 'required|string|max:20|unique:conductores',
+            'licencia' => 'required|string|max:30|unique:conductores',
             'fecha_ingreso' => 'required|date',
-            'años_experiencia' => 'nullable|integer|min:0',
-            'salario_base' => 'nullable|numeric|min:0',
-            'certificaciones' => 'nullable|array',
-            'turno_preferido' => 'nullable|in:MAÑANA,TARDE,NOCHE,ROTATIVO',
-            'estado' => 'required|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO,FALTO_OPERATIVO,FALTO_NO_OPERATIVO',
-            'origen_conductor' => 'nullable|string|max:100',
-            'subempresa' => 'nullable|string|max:100',
-            'observaciones' => 'nullable|string',
-            'puntualidad' => 'nullable|numeric|min:0|max:100',
-            'eficiencia' => 'nullable|numeric|min:0|max:100'
+            'fecha_nacimiento' => 'required|date|before:today',
+            'telefono' => 'nullable|string|max:20',
+            'direccion' => 'nullable|string|max:200',
+            'subempresa' => 'required|string|max:100',
+            'estado' => 'required|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO',
+            'observaciones' => 'nullable|string'
         ]);
 
         try {
             DB::beginTransaction();
 
-            // Valores por defecto
-            $validated['puntualidad'] = $validated['puntualidad'] ?? 100;
-            $validated['eficiencia'] = $validated['eficiencia'] ?? 100;
-            $validated['score_general'] = ($validated['puntualidad'] + $validated['eficiencia']) / 2;
-            $validated['dias_acumulados'] = 0;
-
             $conductor = Conductor::create($validated);
 
             // Crear backup inicial
-            ConductorBackup::crearBackup(
-                $conductor->id,
-                'CREADO',
-                null,
-                $conductor->getAttributes(),
-                'Conductor creado desde el sistema'
-            );
-
-            // Ejecutar validaciones automáticas
-            $conductor->validarDatos();
+            ConductorBackup::crearBackup($conductor, 'CREACION', 'Conductor creado');
 
             DB::commit();
 
@@ -208,6 +176,7 @@ class ConductorController extends Controller
 
         } catch (\Exception $e) {
             DB::rollback();
+            Log::error('Error creando conductor: ' . $e->getMessage());
             return back()
                 ->withInput()
                 ->with('error', 'Error al crear conductor: ' . $e->getMessage());
@@ -217,7 +186,6 @@ class ConductorController extends Controller
     public function edit($id)
     {
         $conductor = Conductor::findOrFail($id);
-
         $subempresas = Conductor::distinct('subempresa')
             ->whereNotNull('subempresa')
             ->pluck('subempresa')
@@ -231,64 +199,50 @@ class ConductorController extends Controller
         $conductor = Conductor::findOrFail($id);
 
         $validated = $request->validate([
-            'codigo_conductor' => 'nullable|string|max:20|unique:conductores,codigo_conductor,' . $id,
+            'codigo_conductor' => [
+                'required',
+                'string',
+                'max:20',
+                Rule::unique('conductores')->ignore($conductor->id)
+            ],
             'nombre' => 'required|string|max:100',
             'apellido' => 'required|string|max:100',
-            'dni' => 'required|string|size:8|unique:conductores,dni,' . $id,
-            'licencia' => 'required|string|max:20|unique:conductores,licencia,' . $id,
-            'categoria_licencia' => 'nullable|string|max:10',
-            'fecha_vencimiento_licencia' => 'required|date|after:today',
-            'telefono' => 'nullable|string|max:15',
-            'email' => 'nullable|email|max:100',
-            'direccion' => 'nullable|string|max:200',
-            'fecha_nacimiento' => 'nullable|date|before:today',
-            'genero' => 'nullable|in:M,F,OTRO',
-            'contacto_emergencia' => 'nullable|string|max:100',
-            'telefono_emergencia' => 'nullable|string|max:15',
+            'dni' => [
+                'required',
+                'string',
+                'max:20',
+                Rule::unique('conductores')->ignore($conductor->id)
+            ],
+            'licencia' => [
+                'required',
+                'string',
+                'max:30',
+                Rule::unique('conductores')->ignore($conductor->id)
+            ],
             'fecha_ingreso' => 'required|date',
-            'años_experiencia' => 'nullable|integer|min:0',
-            'salario_base' => 'nullable|numeric|min:0',
-            'certificaciones' => 'nullable|array',
-            'turno_preferido' => 'nullable|in:MAÑANA,TARDE,NOCHE,ROTATIVO',
-            'estado' => 'required|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO,FALTO_OPERATIVO,FALTO_NO_OPERATIVO',
-            'origen_conductor' => 'nullable|string|max:100',
-            'subempresa' => 'nullable|string|max:100',
-            'observaciones' => 'nullable|string',
-            'puntualidad' => 'nullable|numeric|min:0|max:100',
-            'eficiencia' => 'nullable|numeric|min:0|max:100',
-            'dias_acumulados' => 'nullable|integer|min:0'
+            'fecha_nacimiento' => 'required|date|before:today',
+            'telefono' => 'nullable|string|max:20',
+            'direccion' => 'nullable|string|max:200',
+            'subempresa' => 'required|string|max:100',
+            'estado' => 'required|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO,FALTA_OPERATIVO,FALTA_NO_OPERATIVO',
+            'observaciones' => 'nullable|string'
         ]);
 
         try {
             DB::beginTransaction();
 
-            $datosAnteriores = $conductor->getOriginal();
-
-            // Recalcular score general
-            if (isset($validated['puntualidad']) && isset($validated['eficiencia'])) {
-                $validated['score_general'] = ($validated['puntualidad'] + $validated['eficiencia']) / 2;
-            }
-
-            // Reset días acumulados si cambia a descanso
-            if (in_array($validated['estado'], ['DESCANSO_FISICO', 'DESCANSO_SEMANAL', 'VACACIONES'])) {
-                $validated['dias_acumulados'] = 0;
-            }
+            // Guardar valores originales para backup
+            $valoresOriginales = $conductor->getOriginal();
 
             $conductor->update($validated);
 
-            // Crear backup
-            ConductorBackup::create([
-                'conductor_id' => $conductor->id,
-                'datos_anteriores' => $datosAnteriores,
-                'datos_nuevos' => $conductor->fresh()->toArray(),
-                'accion' => 'ACTUALIZACION',
-                'motivo' => $request->get('motivo_cambio', 'Actualización de datos')
-            ]);
-
-            // Ejecutar validaciones automáticas si cambió el estado a disponible
-            if ($conductor->wasChanged('estado') && $conductor->estado === 'DISPONIBLE') {
-                $conductor->validarDatos();
-            }
+            // Crear backup del cambio
+            ConductorBackup::crearBackup(
+                $conductor,
+                'ACTUALIZACION',
+                'Conductor actualizado',
+                $valoresOriginales
+            );
 
             DB::commit();
 
@@ -298,6 +252,7 @@ class ConductorController extends Controller
 
         } catch (\Exception $e) {
             DB::rollback();
+            Log::error('Error actualizando conductor: ' . $e->getMessage());
             return back()
                 ->withInput()
                 ->with('error', 'Error al actualizar conductor: ' . $e->getMessage());
@@ -306,69 +261,134 @@ class ConductorController extends Controller
 
     public function destroy($id)
     {
-        $conductor = Conductor::findOrFail($id);
-
         try {
+            $conductor = Conductor::findOrFail($id);
+
+            // Verificar si puede ser eliminado
+            if ($conductor->turnos()->exists() || $conductor->rutasCortas()->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No se puede eliminar el conductor porque tiene turnos o rutas cortas asignadas'
+                ], 400);
+            }
+
             DB::beginTransaction();
 
-            // Verificar si tiene registros relacionados activos
-            if ($conductor->turnos()->whereIn('estado', ['PROGRAMADO', 'EN_CURSO'])->exists()) {
-                throw new \Exception('No se puede eliminar un conductor con turnos activos');
-            }
-
-            if ($conductor->rutasCortas()->whereIn('estado', ['PROGRAMADA', 'EN_CURSO'])->exists()) {
-                throw new \Exception('No se puede eliminar un conductor con rutas activas');
-            }
-
-            $datosAnteriores = $conductor->toArray();
-
             // Crear backup antes de eliminar
-            ConductorBackup::create([
-                'conductor_id' => $conductor->id,
-                'datos_anteriores' => $datosAnteriores,
-                'datos_nuevos' => null,
-                'accion' => 'ELIMINACION',
-                'motivo' => 'Conductor eliminado'
-            ]);
+            ConductorBackup::crearBackup($conductor, 'ELIMINACION', 'Conductor eliminado');
 
             $conductor->delete();
 
             DB::commit();
 
-            return redirect()
-                ->route('conductores.index')
-                ->with('success', 'Conductor eliminado exitosamente');
+            return response()->json([
+                'success' => true,
+                'message' => 'Conductor eliminado exitosamente'
+            ]);
 
         } catch (\Exception $e) {
             DB::rollback();
-            return back()->with('error', 'Error al eliminar conductor: ' . $e->getMessage());
+            Log::error('Error eliminando conductor: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al eliminar conductor: ' . $e->getMessage()
+            ], 500);
         }
     }
 
-    public function enviarADescanso(Request $request, $id)
+    public function cambiarEstado(Request $request, $id)
     {
-        $conductor = Conductor::findOrFail($id);
-
-        $validated = $request->validate([
-            'tipo_descanso' => 'required|in:FISICO,SEMANAL',
-            'motivo' => 'nullable|string|max:500'
+        $request->validate([
+            'estado' => 'required|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO,FALTA_OPERATIVO,FALTA_NO_OPERATIVO',
+            'motivo' => 'nullable|string'
         ]);
 
         try {
-            $estado = $validated['tipo_descanso'] == 'FISICO' ? 'DESCANSO_FISICO' : 'DESCANSO_SEMANAL';
+            $conductor = Conductor::findOrFail($id);
+            $estadoAnterior = $conductor->estado;
+
+            DB::beginTransaction();
 
             $conductor->update([
-                'estado' => $estado,
-                'dias_acumulados' => 0,
-                'observaciones' => $validated['motivo'] ?? 'Descanso programado manualmente'
+                'estado' => $request->estado,
+                'fecha_ultimo_cambio_estado' => now(),
+                'motivo_estado' => $request->motivo
             ]);
+
+            // Si cambia a descanso, resetear días acumulados
+            if (in_array($request->estado, ['DESCANSO_FISICO', 'DESCANSO_SEMANAL', 'VACACIONES'])) {
+                $conductor->update(['dias_acumulados' => 0]);
+            }
+
+            // Crear backup del cambio
+            ConductorBackup::crearBackup(
+                $conductor,
+                'CAMBIO_ESTADO',
+                "Estado cambiado de {$estadoAnterior} a {$request->estado}. Motivo: " . ($request->motivo ?? 'No especificado')
+            );
+
+            DB::commit();
 
             return response()->json([
                 'success' => true,
-                'message' => "Conductor enviado a {$validated['tipo_descanso']} exitosamente"
+                'message' => 'Estado actualizado exitosamente',
+                'data' => [
+                    'nuevo_estado' => $conductor->estado,
+                    'estado_anterior' => $estadoAnterior
+                ]
             ]);
 
         } catch (\Exception $e) {
+            DB::rollback();
+            Log::error('Error cambiando estado: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al cambiar estado: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function enviarDescanso($id)
+    {
+        try {
+            $conductor = Conductor::findOrFail($id);
+
+            if ($conductor->estado !== 'DISPONIBLE') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'El conductor debe estar disponible para enviarlo a descanso'
+                ], 400);
+            }
+
+            DB::beginTransaction();
+
+            $tipoDescanso = $conductor->dias_acumulados >= 6 ? 'DESCANSO_SEMANAL' : 'DESCANSO_FISICO';
+
+            $conductor->update([
+                'estado' => $tipoDescanso,
+                'fecha_ultimo_cambio_estado' => now(),
+                'motivo_estado' => 'Enviado a descanso automáticamente',
+                'dias_acumulados' => 0
+            ]);
+
+            // Crear backup del cambio
+            ConductorBackup::crearBackup(
+                $conductor,
+                'ENVIO_DESCANSO',
+                "Enviado a {$tipoDescanso} automáticamente"
+            );
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => "Conductor enviado a {$tipoDescanso} exitosamente",
+                'data' => ['nuevo_estado' => $conductor->estado]
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            Log::error('Error enviando a descanso: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Error al enviar a descanso: ' . $e->getMessage()
@@ -376,50 +396,51 @@ class ConductorController extends Controller
         }
     }
 
-    public function activar($id)
+    public function actualizarMetricas(Request $request, $id)
     {
-        $conductor = Conductor::findOrFail($id);
+        $request->validate([
+            'eficiencia' => 'nullable|numeric|min:0|max:100',
+            'puntualidad' => 'nullable|numeric|min:0|max:100',
+            'dias_acumulados' => 'nullable|integer|min:0|max:30'
+        ]);
 
         try {
-            $conductor->update([
-                'estado' => 'DISPONIBLE',
-                'dias_acumulados' => 0
-            ]);
+            $conductor = Conductor::findOrFail($id);
 
-            // Ejecutar validaciones automáticas
-            $conductor->validarDatos();
+            DB::beginTransaction();
+
+            $datosActualizacion = array_filter($request->only(['eficiencia', 'puntualidad', 'dias_acumulados']));
+
+            if (!empty($datosActualizacion)) {
+                $conductor->update($datosActualizacion);
+
+                // Recalcular score general
+                $conductor->calcularScoreGeneral();
+
+                // Crear backup del cambio
+                ConductorBackup::crearBackup(
+                    $conductor,
+                    'ACTUALIZACION_METRICAS',
+                    'Métricas actualizadas: ' . implode(', ', array_keys($datosActualizacion))
+                );
+            }
+
+            DB::commit();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Conductor activado exitosamente'
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al activar conductor: ' . $e->getMessage()
-            ], 500);
-        }
-    }
-
-    public function actualizarMetricas($id)
-    {
-        $conductor = Conductor::findOrFail($id);
-
-        try {
-            $conductor->actualizarMetricas();
-
-            return response()->json([
-                'success' => true,
+                'message' => 'Métricas actualizadas exitosamente',
                 'data' => [
                     'eficiencia' => $conductor->eficiencia,
                     'puntualidad' => $conductor->puntualidad,
-                    'score_general' => $conductor->score_general
-                ],
-                'message' => 'Métricas actualizadas exitosamente'
+                    'score_general' => $conductor->score_general,
+                    'dias_acumulados' => $conductor->dias_acumulados
+                ]
             ]);
 
         } catch (\Exception $e) {
+            DB::rollback();
+            Log::error('Error actualizando métricas: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Error al actualizar métricas: ' . $e->getMessage()
@@ -427,109 +448,201 @@ class ConductorController extends Controller
         }
     }
 
-    public function export(Request $request)
+    public function accionMasiva(Request $request)
     {
-        $query = Conductor::query();
+        $request->validate([
+            'accion' => 'required|in:cambiar_estado,enviar_descanso,actualizar_subempresa,eliminar',
+            'conductores' => 'required|array|min:1',
+            'conductores.*' => 'exists:conductores,id',
+            'nuevo_estado' => 'nullable|required_if:accion,cambiar_estado|in:DISPONIBLE,DESCANSO_FISICO,DESCANSO_SEMANAL,VACACIONES,SUSPENDIDO',
+            'nueva_subempresa' => 'nullable|required_if:accion,actualizar_subempresa|string|max:100',
+            'motivo' => 'nullable|string'
+        ]);
 
-        // Aplicar los mismos filtros que en index
-        if ($request->filled('buscar')) {
-            $buscar = $request->buscar;
-            $query->where(function ($q) use ($buscar) {
-                $q->where('codigo_conductor', 'like', "%{$buscar}%")
-                  ->orWhere('nombre', 'like', "%{$buscar}%")
-                  ->orWhere('apellido', 'like', "%{$buscar}%")
-                  ->orWhere('dni', 'like', "%{$buscar}%")
-                  ->orWhere('licencia', 'like', "%{$buscar}%");
-            });
-        }
+        try {
+            DB::beginTransaction();
 
-        if ($request->filled('estado')) {
-            $query->where('estado', $request->estado);
-        }
+            $procesados = 0;
+            $errores = [];
 
-        if ($request->filled('subempresa')) {
-            $query->where('subempresa', $request->subempresa);
-        }
+            foreach ($request->conductores as $conductorId) {
+                try {
+                    $conductor = Conductor::findOrFail($conductorId);
 
-        $conductores = $query->get();
+                    switch ($request->accion) {
+                        case 'cambiar_estado':
+                            $conductor->update([
+                                'estado' => $request->nuevo_estado,
+                                'fecha_ultimo_cambio_estado' => now(),
+                                'motivo_estado' => $request->motivo ?? 'Cambio masivo'
+                            ]);
+                            break;
 
-        $filename = 'conductores_' . date('Y-m-d_H-i-s') . '.csv';
+                        case 'enviar_descanso':
+                            if ($conductor->estado === 'DISPONIBLE') {
+                                $tipoDescanso = $conductor->dias_acumulados >= 6 ? 'DESCANSO_SEMANAL' : 'DESCANSO_FISICO';
+                                $conductor->update([
+                                    'estado' => $tipoDescanso,
+                                    'fecha_ultimo_cambio_estado' => now(),
+                                    'motivo_estado' => 'Descanso masivo',
+                                    'dias_acumulados' => 0
+                                ]);
+                            }
+                            break;
 
-        $headers = [
-            'Content-Type' => 'text/csv',
-            'Content-Disposition' => "attachment; filename=\"$filename\"",
-        ];
+                        case 'actualizar_subempresa':
+                            $conductor->update(['subempresa' => $request->nueva_subempresa]);
+                            break;
 
-        $callback = function() use ($conductores) {
-            $file = fopen('php://output', 'w');
+                        case 'eliminar':
+                            if (!$conductor->turnos()->exists() && !$conductor->rutasCortas()->exists()) {
+                                ConductorBackup::crearBackup($conductor, 'ELIMINACION', 'Eliminación masiva');
+                                $conductor->delete();
+                            } else {
+                                $errores[] = "Conductor {$conductor->codigo_conductor}: tiene turnos/rutas asignadas";
+                                continue 2;
+                            }
+                            break;
+                    }
 
-            // Encabezados CSV
-            fputcsv($file, [
-                'Código',
-                'Nombre',
-                'Apellido',
-                'DNI',
-                'Licencia',
-                'Estado',
-                'Subempresa',
-                'Fecha Ingreso',
-                'Días Acumulados',
-                'Puntualidad',
-                'Eficiencia',
-                'Score General',
-                'Teléfono'
-            ]);
+                    ConductorBackup::crearBackup($conductor, 'ACCION_MASIVA', "Acción masiva: {$request->accion}");
+                    $procesados++;
 
-            // Datos
-            foreach ($conductores as $conductor) {
-                fputcsv($file, [
-                    $conductor->codigo_conductor,
-                    $conductor->nombre,
-                    $conductor->apellido,
-                    $conductor->dni,
-                    $conductor->licencia,
-                    $conductor->estado,
-                    $conductor->subempresa,
-                    $conductor->fecha_ingreso->format('d/m/Y'),
-                    $conductor->dias_acumulados,
-                    $conductor->puntualidad . '%',
-                    $conductor->eficiencia . '%',
-                    $conductor->score_general,
-                    $conductor->telefono
-                ]);
+                } catch (\Exception $e) {
+                    $errores[] = "Conductor ID {$conductorId}: " . $e->getMessage();
+                }
             }
 
-            fclose($file);
-        };
+            DB::commit();
 
-        return response()->stream($callback, 200, $headers);
-    }
+            $mensaje = "Se procesaron {$procesados} conductores exitosamente.";
+            if (!empty($errores)) {
+                $mensaje .= " Errores: " . implode(', ', array_slice($errores, 0, 3));
+                if (count($errores) > 3) {
+                    $mensaje .= " y " . (count($errores) - 3) . " más.";
+                }
+            }
 
-    public function exportar(Request $request)
-    {
-        // Alias para export() para compatibilidad
-        return $this->export($request);
+            return response()->json([
+                'success' => true,
+                'message' => $mensaje,
+                'data' => [
+                    'procesados' => $procesados,
+                    'errores' => count($errores)
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollback();
+            Log::error('Error en acción masiva: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error en acción masiva: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     public function importar(Request $request)
     {
         $request->validate([
-            'archivo' => 'required|file|mimes:xlsx,xls,csv|max:10240'
+            'archivo' => 'required|file|mimes:csv,xlsx,xls|max:10240',
+            'actualizar_existentes' => 'boolean'
         ]);
 
         try {
-            $import = new ConductoresImport();
+            $import = new ConductorImport($request->boolean('actualizar_existentes', false));
             Excel::import($import, $request->file('archivo'));
 
-            return back()->with('success',
-                "Importación completada. {$import->getRowCount()} conductores procesados."
-            );
+            return redirect()
+                ->back()
+                ->with(
+                    'success',
+                    "Importación completada. {$import->getRowCount()} conductores procesados."
+                );
 
         } catch (\Exception $e) {
             return back()->with('error', 'Error en la importación: ' . $e->getMessage());
         }
     }
 
+    public function exportar(Request $request)
+    {
+        try {
+            $query = Conductor::query();
+
+            // Aplicar filtros de exportación si se proporcionan
+            if ($request->filled('estado')) {
+                $query->where('estado', $request->estado);
+            }
+
+            if ($request->filled('subempresa')) {
+                $query->where('subempresa', $request->subempresa);
+            }
+
+            $conductores = $query->orderBy('codigo_conductor')->get();
+
+            $headers = [
+                'Content-Type' => 'text/csv',
+                'Content-Disposition' => 'attachment; filename="conductores_' . now()->format('Y-m-d_H-i-s') . '.csv"',
+            ];
+
+            $callback = function() use ($conductores) {
+                $file = fopen('php://output', 'w');
+
+                // Encabezados
+                fputcsv($file, [
+                    'Código',
+                    'Nombre',
+                    'Apellido',
+                    'DNI',
+                    'Licencia',
+                    'Fecha Ingreso',
+                    'Estado',
+                    'Subempresa',
+                    'Teléfono',
+                    'Eficiencia',
+                    'Puntualidad',
+                    'Score General',
+                    'Días Acumulados',
+                    'Fecha Nacimiento',
+                    'Dirección',
+                    'Observaciones'
+                ]);
+
+                // Datos
+                foreach ($conductores as $conductor) {
+                    fputcsv($file, [
+                        $conductor->codigo_conductor,
+                        $conductor->nombre,
+                        $conductor->apellido,
+                        $conductor->dni,
+                        $conductor->licencia,
+                        $conductor->fecha_ingreso?->format('Y-m-d'),
+                        $conductor->estado,
+                        $conductor->subempresa,
+                        $conductor->telefono,
+                        $conductor->eficiencia,
+                        $conductor->puntualidad,
+                        $conductor->score_general,
+                        $conductor->dias_acumulados,
+                        $conductor->fecha_nacimiento?->format('Y-m-d'),
+                        $conductor->direccion,
+                        $conductor->observaciones
+                    ]);
+                }
+
+                fclose($file);
+            };
+
+            return response()->stream($callback, 200, $headers);
+
+        } catch (\Exception $e) {
+            Log::error('Error exportando conductores: ' . $e->getMessage());
+            return back()->with('error', 'Error al exportar conductores: ' . $e->getMessage());
+        }
+    }
+
+    // SOLUCIÓN: Método plantillaImportacion que faltaba para la ruta conductores.plantilla
     public function plantillaImportacion()
     {
         $headers = [
@@ -574,6 +687,103 @@ class ConductorController extends Controller
         };
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    public function historial($id)
+    {
+        $conductor = Conductor::findOrFail($id);
+        $historial = ConductorBackup::where('conductor_id', $id)
+            ->orderBy('created_at', 'desc')
+            ->paginate(20);
+
+        return view('conductores.historial', compact('conductor', 'historial'));
+    }
+
+    public function metricas($id)
+    {
+        $conductor = Conductor::findOrFail($id);
+
+        $metricas = [
+            'turnos_ultimo_mes' => $conductor->turnos()
+                ->where('fecha_turno', '>=', now()->subMonth())
+                ->count(),
+            'rutas_cortas_ultimo_mes' => $conductor->rutasCortas()
+                ->where('fecha', '>=', now()->subMonth())
+                ->count(),
+            'promedio_eficiencia_historico' => $conductor->historialMetricas()
+                ->avg('eficiencia'),
+            'promedio_puntualidad_historico' => $conductor->historialMetricas()
+                ->avg('puntualidad'),
+            'validaciones_resueltas' => $conductor->validaciones()
+                ->where('estado', 'RESUELTO')
+                ->count(),
+            'validaciones_pendientes' => $conductor->validaciones()
+                ->where('estado', 'PENDIENTE')
+                ->count()
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => $metricas
+        ]);
+    }
+
+    public function reporteRendimiento(Request $request)
+    {
+        $fechaInicio = $request->input('fecha_inicio', now()->subMonth()->toDateString());
+        $fechaFin = $request->input('fecha_fin', now()->toDateString());
+
+        $conductores = Conductor::with(['turnos', 'rutasCortas'])
+            ->where('estado', '!=', 'SUSPENDIDO')
+            ->get()
+            ->map(function ($conductor) use ($fechaInicio, $fechaFin) {
+                return [
+                    'id' => $conductor->id,
+                    'codigo' => $conductor->codigo_conductor,
+                    'nombre_completo' => $conductor->nombre_completo,
+                    'subempresa' => $conductor->subempresa,
+                    'eficiencia' => $conductor->eficiencia,
+                    'puntualidad' => $conductor->puntualidad,
+                    'score_general' => $conductor->score_general,
+                    'turnos_periodo' => $conductor->turnos()
+                        ->whereBetween('fecha_turno', [$fechaInicio, $fechaFin])
+                        ->count(),
+                    'rutas_cortas_periodo' => $conductor->rutasCortas()
+                        ->whereBetween('fecha', [$fechaInicio, $fechaFin])
+                        ->count()
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'data' => $conductores
+        ]);
+    }
+
+    public function analisisDisponibilidad()
+    {
+        $analisis = [
+            'disponibles_ahora' => Conductor::where('estado', 'DISPONIBLE')->count(),
+            'en_descanso' => Conductor::whereIn('estado', ['DESCANSO_FISICO', 'DESCANSO_SEMANAL'])->count(),
+            'en_vacaciones' => Conductor::where('estado', 'VACACIONES')->count(),
+            'suspendidos' => Conductor::where('estado', 'SUSPENDIDO')->count(),
+            'falta_operativo' => Conductor::where('estado', 'FALTA_OPERATIVO')->count(),
+            'falta_no_operativo' => Conductor::where('estado', 'FALTA_NO_OPERATIVO')->count(),
+            'por_subempresa' => Conductor::selectRaw('subempresa, estado, count(*) as total')
+                ->groupBy('subempresa', 'estado')
+                ->get()
+                ->groupBy('subempresa'),
+            'proximos_a_descanso' => Conductor::where('estado', 'DISPONIBLE')
+                ->where('dias_acumulados', '>=', 5)
+                ->orderBy('dias_acumulados', 'desc')
+                ->limit(10)
+                ->get()
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => $analisis
+        ]);
     }
 
     // Helper methods para response JSON
