@@ -94,13 +94,22 @@ Route::middleware(['auth'])->group(function () {
 
     Route::prefix('parametros')->name('parametros.')->group(function () {
         Route::get('/', [ParametroController::class, 'index'])->name('index');
+        Route::get('/create', [ParametroController::class, 'create'])->name('create');
+        Route::post('/', [ParametroController::class, 'store'])->name('store');
+        Route::get('/{parametro}', [ParametroController::class, 'show'])->name('show');
+        Route::get('/{parametro}/edit', [ParametroController::class, 'edit'])->name('edit');
+        Route::put('/{parametro}', [ParametroController::class, 'update'])->name('update');
+        Route::delete('/{parametro}', [ParametroController::class, 'destroy'])->name('destroy');
+
         Route::post('/actualizar', [ParametroController::class, 'actualizar'])->name('actualizar');
         Route::post('/importar', [ParametroController::class, 'importar'])->name('importar');
         Route::get('/exportar', [ParametroController::class, 'exportar'])->name('exportar');
         Route::post('/resetear', [ParametroController::class, 'resetear'])->name('resetear');
 
-        // SOLUCIÓN: Agregar ruta faltante que esperan las vistas
+        // SOLUCIÓN: Agregar rutas faltantes que esperan las vistas
         Route::get('/plantilla', [ParametroController::class, 'plantilla'])->name('plantilla');
+        Route::post('/validar', [ParametroController::class, 'validarConfiguracion'])->name('validar');
+        Route::post('/{parametro}/restaurar-defecto', [ParametroController::class, 'restaurarDefecto'])->name('restaurar.defecto');
 
         // Configuración de algoritmos
         Route::get('/algoritmos', [ParametroController::class, 'algoritmos'])->name('algoritmos');
