@@ -1,707 +1,747 @@
-<?php
+/**
+ * =============================================================================
+ * FUNCIÓN COMPLETA PARA RESOLVER VALIDACIONES CRÍTICAS
+ * =============================================================================
+ * Reemplaza la función básica en app/Services/ServicioPlanificacionAutomatizada.php
+ */
 
-namespace App\Services;
-
-use App\Models\Conductor;
-use App\Models\RutaCorta;
-use App\Models\Plantilla;
-use App\Models\Turno;
-use App\Models\Validacion;
-use App\Models\HistorialPlanificacion;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Carbon\Carbon;
-
-class ServicioPlanificacionAutomatizada
+/**
+ * Resolver validación crítica automáticamente según su tipo
+ */
+private function resolverValidacionCritica($plantilla, $validacion)
 {
-    private $fechaPlanificacion;
-    private $configuracion;
-    private $metricas;
-
-    public function __construct()
-    {
-        $this->configuracion = [
-            'dias_filtro_rutas_cortas' => 2, // Últimos 2 días a excluir
-            'meses_antigüedad_minima' => 1, // Excluir conductores nuevos (último mes)
-            'eficiencia_minima' => 80,
-            'puntualidad_minima' => 85,
-            'horas_descanso_minimas' => 12,
-            'max_dias_sin_descanso' => 6
-        ];
-
-        $this->metricas = [
-            'conductores_procesados' => 0,
-            'conductores_filtrados' => 0,
-            'asignaciones_realizadas' => 0,
-            'validaciones_generadas' => 0,
-            'tiempo_inicio' => null,
-            'errores' => []
-        ];
-    }
-
-    /**
-     * MÉTODO PRINCIPAL - Ejecuta todo el proceso de planificación automatizada
-     */
-    public function ejecutarPlanificacionCompleta($fechaPlanificacion = null)
-    {
-        $this->fechaPlanificacion = $fechaPlanificacion ?? Carbon::now()->addDay();
-        $this->metricas['tiempo_inicio'] = now();
-
-        Log::info('🚀 Iniciando planificación automatizada', [
-            'fecha_planificacion' => $this->fechaPlanificacion->format('Y-m-d'),
-            'configuracion' => $this->configuracion
+    try {
+        Log::info("🔧 Iniciando resolución de validación crítica", [
+            'tipo' => $validacion['tipo'] ?? ($validacion->tipo ?? 'DESCONOCIDO'),
+            'validacion_id' => $validacion['id'] ?? ($validacion->id ?? null),
+            'plantilla_id' => $plantilla->id ?? null
         ]);
 
-        DB::beginTransaction();
+        // Convertir array a objeto si es necesario
+        $validacionObj = $this->normalizarValidacion($validacion);
 
-        try {
-            // PASO 1: Balance de rutas cortas y filtros
-            $conductoresDisponibles = $this->paso1_BalanceRutasCortas();
+        // Resolver según el tipo de validación
+        $resultado = match($validacionObj->tipo) {
+            'DESCANSO_001' => $this->resolverDescansoObligatorio($plantilla, $validacionObj),
+            'EFICIENCIA_002' => $this->resolverBajaEficiencia($plantilla, $validacionObj),
+            'PUNTUALIDAD_003' => $this->resolverBajaPuntualidad($plantilla, $validacionObj),
+            'TURNO_VACIO_004' => $this->resolverTurnoVacio($plantilla, $validacionObj),
+            'PROXIMO_DESCANSO' => $this->resolverProximoDescanso($plantilla, $validacionObj),
+            'HORAS_EXCEDIDAS' => $this->resolverHorasExcedidas($plantilla, $validacionObj),
+            'CONDUCTOR_NO_DISPONIBLE' => $this->resolverConductorNoDisponible($plantilla, $validacionObj),
+            'CONFLICTO_HORARIO' => $this->resolverConflictoHorario($plantilla, $validacionObj),
+            'RUTA_CORTA_CONSECUTIVA' => $this->resolverRutaCortaConsecutiva($plantilla, $validacionObj),
+            'SOBRECARGA_TRABAJO' => $this->resolverSobrecargaTrabajo($plantilla, $validacionObj),
+            default => $this->resolverValidacionGenerica($plantilla, $validacionObj)
+        };
 
-            // PASO 2: Tablero de rutas cortas semanales
-            $conductoresConMetricas = $this->paso2_TableroRutasSemanales($conductoresDisponibles);
+        // Actualizar estado de la validación
+        $this->actualizarEstadoValidacion($validacionObj, $resultado);
 
-            // PASO 3: Verificación operatividad (simulado - en producción sería email)
-            $conductoresOperativos = $this->paso3_VerificarOperatividad($conductoresConMetricas);
+        // Registrar en métricas
+        $this->registrarResolucionEnMetricas($validacionObj->tipo, $resultado['resuelto']);
 
-            // PASO 4: BI Conductores - disponibilidad y origen
-            $conductoresBI = $this->paso4_AnalisisBIConductores($conductoresOperativos);
-
-            // PASO 5: Generación de pre-plantilla con frecuencias
-            $prePlantilla = $this->paso5_GenerarPrePlantilla($conductoresBI);
-
-            // PASO 6: Asignación personal NAZCA para vacíos
-            $plantillaConNazca = $this->paso6_AsignarPersonalNazca($prePlantilla);
-
-            // PASO 7: Generación de plantilla final y revisión
-            $plantillaFinal = $this->paso7_GenerarPlantillaFinal($plantillaConNazca);
-
-            // PASO 8: Validaciones post generación
-            $validaciones = $this->paso8_ValidacionesPost($plantillaFinal);
-
-            // PASO 9: Optimización iterativa
-            $plantillaOptimizada = $this->paso9_OptimizacionIterativa($plantillaFinal, $validaciones);
-
-            // PASO 10: Finalización y notificaciones
-            $resultado = $this->paso10_FinalizacionNotificaciones($plantillaOptimizada);
-
-            DB::commit();
-
-            $this->registrarHistorial('COMPLETADO', $resultado);
-
-            Log::info('✅ Planificación automatizada completada exitosamente', [
-                'metricas' => $this->metricas,
-                'tiempo_total' => now()->diffInSeconds($this->metricas['tiempo_inicio']) . ' segundos'
-            ]);
-
-            return $resultado;
-
-        } catch (\Exception $e) {
-            DB::rollback();
-
-            $this->metricas['errores'][] = $e->getMessage();
-            $this->registrarHistorial('ERROR', null, $e->getMessage());
-
-            Log::error('❌ Error en planificación automatizada', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            throw $e;
-        }
-    }
-
-    /**
-     * PASO 1: Balance de rutas cortas con filtros de exclusión
-     */
-    private function paso1_BalanceRutasCortas()
-    {
-        Log::info('📋 PASO 1: Aplicando filtros de rutas cortas');
-
-        $fechaLimiteRutasCortas = $this->fechaPlanificacion->copy()->subDays($this->configuracion['dias_filtro_rutas_cortas']);
-        $fechaLimiteAntiguedad = now()->subMonths($this->configuracion['meses_antigüedad_minima']);
-
-        $conductores = Conductor::with(['rutasCortas' => function($query) use ($fechaLimiteRutasCortas) {
-                $query->where('fecha_realizacion', '>=', $fechaLimiteRutasCortas);
-            }])
-            ->where('estado', 'DISPONIBLE')
-            ->where('fecha_ingreso', '<=', $fechaLimiteAntiguedad) // Excluir conductores nuevos
-            ->get()
-            ->filter(function($conductor) {
-                // Filtro: No deben tener rutas cortas en los últimos días
-                return $conductor->rutasCortas->isEmpty();
-            });
-
-        $this->metricas['conductores_procesados'] = Conductor::where('estado', 'DISPONIBLE')->count();
-        $this->metricas['conductores_filtrados'] = $conductores->count();
-
-        Log::info("✓ PASO 1 completado", [
-            'total_disponibles' => $this->metricas['conductores_procesados'],
-            'post_filtros' => $this->metricas['conductores_filtrados']
-        ]);
-
-        return $conductores;
-    }
-
-    /**
-     * PASO 2: Análisis de tablero de rutas semanales
-     */
-    private function paso2_TableroRutasSemanales($conductores)
-    {
-        Log::info('📊 PASO 2: Analizando tablero de rutas semanales');
-
-        $inicioSemana = $this->fechaPlanificacion->copy()->startOfWeek();
-        $finSemana = $this->fechaPlanificacion->copy()->endOfWeek();
-
-        $conductoresConMetricas = $conductores->map(function($conductor) use ($inicioSemana, $finSemana) {
-            // Contar rutas de la semana
-            $rutasSemana = RutaCorta::where('conductor_id', $conductor->id)
-                ->whereBetween('fecha_realizacion', [$inicioSemana, $finSemana])
-                ->count();
-
-            // Calcular ratio de rutas cortas vs largas del mes
-            $rutasCortas30dias = RutaCorta::where('conductor_id', $conductor->id)
-                ->where('fecha_realizacion', '>=', now()->subDays(30))
-                ->count();
-
-            $conductor->rutas_semana_actual = $rutasSemana;
-            $conductor->ratio_rutas_mes = $rutasCortas30dias;
-            $conductor->prioridad_asignacion = $this->calcularPrioridadAsignacion($conductor);
-
-            return $conductor;
-        })->sortBy('prioridad_asignacion'); // Ordenar por prioridad (menor = más prioritario)
-
-        Log::info("✓ PASO 2 completado", [
-            'conductores_analizados' => $conductoresConMetricas->count()
-        ]);
-
-        return $conductoresConMetricas;
-    }
-
-    /**
-     * PASO 3: Verificación de operatividad (simulado)
-     */
-    private function paso3_VerificarOperatividad($conductores)
-    {
-        Log::info('🔍 PASO 3: Verificando operatividad de conductores');
-
-        // En producción, aquí se integraría con el sistema de seguimiento de tripulación
-        // Por ahora, simulamos la verificación basada en datos del sistema
-
-        $conductoresOperativos = $conductores->filter(function($conductor) {
-            // Verificaciones de operatividad
-            $verificaciones = [
-                'eficiencia_ok' => $conductor->eficiencia >= $this->configuracion['eficiencia_minima'],
-                'puntualidad_ok' => $conductor->puntualidad >= $this->configuracion['puntualidad_minima'],
-                'dias_descanso_ok' => $conductor->dias_acumulados < $this->configuracion['max_dias_sin_descanso'],
-                'sin_suspensiones' => !$conductor->tiene_suspensiones_activas,
-                'licencia_vigente' => $conductor->licencia_vigente
-            ];
-
-            $conductor->verificaciones_operatividad = $verificaciones;
-            $conductor->operativo = !in_array(false, $verificaciones);
-
-            return $conductor->operativo;
-        });
-
-        Log::info("✓ PASO 3 completado", [
-            'conductores_operativos' => $conductoresOperativos->count(),
-            'conductores_no_operativos' => $conductores->count() - $conductoresOperativos->count()
-        ]);
-
-        return $conductoresOperativos;
-    }
-
-    /**
-     * PASO 4: Análisis BI de conductores (disponibilidad y origen)
-     */
-    private function paso4_AnalisisBIConductores($conductores)
-    {
-        Log::info('🧠 PASO 4: Análisis BI de conductores');
-
-        $conductoresBI = $conductores->map(function($conductor) {
-            // Determinar origen de disponibilidad
-            $conductor->origen_disponibilidad = $this->determinarOrigenDisponibilidad($conductor);
-
-            // Calcular score de compatibilidad para rutas
-            $conductor->score_compatibilidad = $this->calcularScoreCompatibilidad($conductor);
-
-            // Determinar disponibilidad para horarios específicos
-            $conductor->disponibilidad_horarios = $this->analizarDisponibilidadHorarios($conductor);
-
-            // Calcular métricas de rendimiento ponderadas
-            $conductor->score_rendimiento = ($conductor->eficiencia * 0.6) + ($conductor->puntualidad * 0.4);
-
-            return $conductor;
-        })->sortByDesc('score_compatibilidad');
-
-        Log::info("✓ PASO 4 completado", [
-            'conductores_analizados' => $conductoresBI->count()
-        ]);
-
-        return $conductoresBI;
-    }
-
-    /**
-     * PASO 5: Generación de pre-plantilla con sistema de frecuencias
-     */
-    private function paso5_GenerarPrePlantilla($conductores)
-    {
-        Log::info('📋 PASO 5: Generando pre-plantilla');
-
-        // Obtener turnos que necesitan asignación para la fecha
-        $turnosDisponibles = $this->obtenerTurnosDisponibles();
-
-        $prePlantilla = [];
-        $conductoresAsignados = collect();
-
-        foreach ($turnosDisponibles as $turno) {
-            // Buscar el mejor conductor para este turno
-            $mejorConductor = $this->buscarMejorConductorParaTurno($turno, $conductores, $conductoresAsignados);
-
-            if ($mejorConductor) {
-                $asignacion = [
-                    'turno_id' => $turno->id,
-                    'conductor_id' => $mejorConductor->id,
-                    'fecha_asignacion' => $this->fechaPlanificacion,
-                    'score_compatibilidad' => $mejorConductor->score_compatibilidad,
-                    'tipo_asignacion' => 'AUTOMATICA',
-                    'observaciones' => 'Asignación automática basada en algoritmo de compatibilidad'
-                ];
-
-                $prePlantilla[] = $asignacion;
-                $conductoresAsignados->push($mejorConductor);
-                $this->metricas['asignaciones_realizadas']++;
-            }
+        // Enviar notificación si es necesario
+        if ($resultado['notificar']) {
+            $this->enviarNotificacionResolucion($validacionObj, $resultado);
         }
 
-        Log::info("✓ PASO 5 completado", [
-            'turnos_procesados' => count($turnosDisponibles),
-            'asignaciones_realizadas' => count($prePlantilla)
+        Log::info("✅ Validación crítica procesada", [
+            'tipo' => $validacionObj->tipo,
+            'resuelto' => $resultado['resuelto'],
+            'accion_tomada' => $resultado['accion'],
+            'requiere_atencion_humana' => $resultado['requiere_atencion_humana'] ?? false
         ]);
 
-        return $prePlantilla;
-    }
+        return $resultado;
 
-    /**
-     * PASO 6: Asignación de personal NAZCA para vacíos
-     */
-    private function paso6_AsignarPersonalNazca($prePlantilla)
-    {
-        Log::info('🎯 PASO 6: Asignando personal NAZCA');
-
-        // Identificar turnos sin asignar (vacíos)
-        $turnosSinAsignar = $this->identificarTurnosSinAsignar($prePlantilla);
-
-        // Buscar conductores específicos para servicio NAZCA
-        $conductoresNazca = Conductor::where('estado', 'DISPONIBLE')
-            ->where('servicios_autorizados', 'LIKE', '%NAZCA%')
-            ->where('origen', 'NAZCA')
-            ->orderBy('score_general', 'desc')
-            ->get();
-
-        foreach ($turnosSinAsignar as $turno) {
-            if ($turno->tipo_servicio === 'NAZCA' || $turno->destino === 'NAZCA') {
-                $conductorNazca = $this->buscarMejorConductorNazca($turno, $conductoresNazca, $prePlantilla);
-
-                if ($conductorNazca) {
-                    $prePlantilla[] = [
-                        'turno_id' => $turno->id,
-                        'conductor_id' => $conductorNazca->id,
-                        'fecha_asignacion' => $this->fechaPlanificacion,
-                        'score_compatibilidad' => $conductorNazca->score_general,
-                        'tipo_asignacion' => 'NAZCA_ESPECIALIZADA',
-                        'observaciones' => 'Asignación especializada para servicio NAZCA'
-                    ];
-                }
-            }
-        }
-
-        Log::info("✓ PASO 6 completado");
-
-        return $prePlantilla;
-    }
-
-    /**
-     * PASO 7: Generación de plantilla final
-     */
-    private function paso7_GenerarPlantillaFinal($prePlantilla)
-    {
-        Log::info('📝 PASO 7: Generando plantilla final');
-
-        // Crear registro de plantilla
-        $plantilla = Plantilla::create([
-            'fecha_servicio' => $this->fechaPlanificacion,
-            'tipo' => 'AUTOMATICA',
-            'estado' => 'BORRADOR',
-            'total_turnos' => count($prePlantilla),
-            'created_by' => 1, // Sistema
-            'observaciones' => 'Plantilla generada automáticamente por el sistema de planificación'
+    } catch (\Exception $e) {
+        Log::error("❌ Error resolviendo validación crítica", [
+            'tipo' => $validacion['tipo'] ?? ($validacion->tipo ?? 'DESCONOCIDO'),
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString()
         ]);
 
-        // Crear turnos de la plantilla
-        foreach ($prePlantilla as $asignacion) {
-            Turno::create([
-                'plantilla_id' => $plantilla->id,
-                'turno_id' => $asignacion['turno_id'],
-                'conductor_id' => $asignacion['conductor_id'],
-                'fecha_servicio' => $asignacion['fecha_asignacion'],
-                'score_asignacion' => $asignacion['score_compatibilidad'],
-                'tipo_asignacion' => $asignacion['tipo_asignacion'],
-                'observaciones' => $asignacion['observaciones']
-            ]);
-        }
+        // Marcar como error para revisión manual
+        $this->marcarValidacionParaRevisionManual($validacion, $e->getMessage());
 
-        Log::info("✓ PASO 7 completado", [
-            'plantilla_id' => $plantilla->id,
-            'turnos_asignados' => count($prePlantilla)
-        ]);
-
-        return $plantilla;
-    }
-
-    /**
-     * PASO 8: Validaciones post generación
-     */
-    private function paso8_ValidacionesPost($plantilla)
-    {
-        Log::info('🔍 PASO 8: Ejecutando validaciones post generación');
-
-        $validaciones = [];
-
-        // Validación TIPO 1: Frescos con inicio antes de 12 p.m.
-        $validaciones = array_merge($validaciones, $this->validarFrescosAntes12pm($plantilla));
-
-        // Validación TIPO 2: MV con término antes de 9 a.m.
-        $validaciones = array_merge($validaciones, $this->validarMVAntes9am($plantilla));
-
-        // Validaciones adicionales del sistema
-        $validaciones = array_merge($validaciones, $this->validacionesAdicionales($plantilla));
-
-        // Crear registros de validación
-        foreach ($validaciones as $validacionData) {
-            $validacion = Validacion::create($validacionData);
-            $this->metricas['validaciones_generadas']++;
-        }
-
-        Log::info("✓ PASO 8 completado", [
-            'validaciones_generadas' => count($validaciones)
-        ]);
-
-        return $validaciones;
-    }
-
-    /**
-     * PASO 9: Optimización iterativa
-     */
-    private function paso9_OptimizacionIterativa($plantilla, $validaciones)
-    {
-        Log::info('⚡ PASO 9: Ejecutando optimización iterativa');
-
-        $iteracion = 0;
-        $maxIteraciones = 3;
-        $validacionesCriticas = collect($validaciones)->where('severidad', 'CRITICA');
-
-        while ($validacionesCriticas->isNotEmpty() && $iteracion < $maxIteraciones) {
-            $iteracion++;
-
-            Log::info("   Iteración {$iteracion}: {$validacionesCriticas->count()} validaciones críticas");
-
-            foreach ($validacionesCriticas as $validacion) {
-                $this->resolverValidacionCritica($plantilla, $validacion);
-            }
-
-            // Re-evaluar validaciones
-            $nuevasValidaciones = $this->paso8_ValidacionesPost($plantilla);
-            $validacionesCriticas = collect($nuevasValidaciones)->where('severidad', 'CRITICA');
-        }
-
-        if ($validacionesCriticas->isNotEmpty()) {
-            Log::warning("⚠️ Quedan {$validacionesCriticas->count()} validaciones críticas sin resolver");
-        }
-
-        Log::info("✓ PASO 9 completado", [
-            'iteraciones_realizadas' => $iteracion,
-            'validaciones_criticas_restantes' => $validacionesCriticas->count()
-        ]);
-
-        return $plantilla;
-    }
-
-    /**
-     * PASO 10: Finalización y notificaciones
-     */
-    private function paso10_FinalizacionNotificaciones($plantilla)
-    {
-        Log::info('📤 PASO 10: Finalizando y enviando notificaciones');
-
-        // Actualizar estado de la plantilla
-        $plantilla->update([
-            'estado' => 'GENERADA',
-            'fecha_generacion' => now(),
-            'metricas_generacion' => $this->metricas
-        ]);
-
-        // Preparar resumen para notificaciones
-        $resumen = [
-            'plantilla_id' => $plantilla->id,
-            'fecha_servicio' => $plantilla->fecha_servicio,
-            'total_turnos' => $plantilla->total_turnos,
-            'conductores_asignados' => $plantilla->turnos->pluck('conductor_id')->unique()->count(),
-            'validaciones_generadas' => $this->metricas['validaciones_generadas'],
-            'tiempo_procesamiento' => now()->diffInSeconds($this->metricas['tiempo_inicio']),
-            'estado' => 'COMPLETADO'
-        ];
-
-        // En producción, aquí se enviarían las notificaciones por email
-        Log::info("📧 Notificaciones enviadas (simulado)");
-
-        Log::info("✅ PASO 10 completado - Planificación finalizada", $resumen);
-
-        return $resumen;
-    }
-
-    // =============================================================================
-    // MÉTODOS AUXILIARES
-    // =============================================================================
-
-    private function calcularPrioridadAsignacion($conductor)
-    {
-        $prioridad = 0;
-
-        // Menor cantidad de rutas cortas = mayor prioridad
-        $prioridad += $conductor->ratio_rutas_mes * 10;
-
-        // Mejor rendimiento = mayor prioridad (invertir para orden ascendente)
-        $prioridad += (100 - $conductor->score_general) * 0.5;
-
-        // Más días sin descanso = menor prioridad
-        $prioridad += $conductor->dias_acumulados * 5;
-
-        return round($prioridad, 2);
-    }
-
-    private function determinarOrigenDisponibilidad($conductor)
-    {
-        // Lógica para determinar desde dónde está disponible el conductor
-        $ultimoServicio = $conductor->ultimoServicio();
-
-        if ($ultimoServicio && $ultimoServicio->destino) {
-            return $ultimoServicio->destino;
-        }
-
-        return $conductor->origen;
-    }
-
-    private function calcularScoreCompatibilidad($conductor)
-    {
-        $score = 0;
-
-        // Factor eficiencia (30%)
-        $score += ($conductor->eficiencia / 100) * 30;
-
-        // Factor puntualidad (25%)
-        $score += ($conductor->puntualidad / 100) * 25;
-
-        // Factor experiencia (20%)
-        $mesesExperiencia = Carbon::parse($conductor->fecha_ingreso)->diffInMonths(now());
-        $score += min(20, $mesesExperiencia * 2);
-
-        // Factor disponibilidad (15%)
-        $score += $conductor->dias_acumulados < 5 ? 15 : 5;
-
-        // Factor rutas recientes (10%)
-        $score += $conductor->ratio_rutas_mes < 3 ? 10 : 0;
-
-        return round($score, 2);
-    }
-
-    private function analizarDisponibilidadHorarios($conductor)
-    {
-        // Análisis de disponibilidad por franjas horarias
         return [
-            'madrugada' => true, // 00:00 - 06:00
-            'mañana' => true,    // 06:00 - 12:00
-            'tarde' => true,     // 12:00 - 18:00
-            'noche' => $conductor->autorizado_turnos_noche // 18:00 - 24:00
+            'resuelto' => false,
+            'accion' => 'ERROR_PROCESAMIENTO',
+            'mensaje' => 'Error en resolución automática: ' . $e->getMessage(),
+            'requiere_atencion_humana' => true,
+            'notificar' => true
+        ];
+    }
+}
+
+/**
+ * =============================================================================
+ * RESOLVERS ESPECÍFICOS POR TIPO DE VALIDACIÓN
+ * =============================================================================
+ */
+
+/**
+ * Resolver conductor con descanso obligatorio (6+ días trabajados)
+ */
+private function resolverDescansoObligatorio($plantilla, $validacion)
+{
+    $conductor = $this->obtenerConductorDeValidacion($validacion);
+
+    if (!$conductor) {
+        return $this->crearResultadoError('Conductor no encontrado para validación de descanso');
+    }
+
+    Log::info("   🛏️ Resolviendo descanso obligatorio para conductor", [
+        'conductor_id' => $conductor->id,
+        'nombre' => $conductor->nombre,
+        'dias_acumulados' => $conductor->dias_acumulados
+    ]);
+
+    // Paso 1: Buscar conductor de reemplazo disponible
+    $conductorReemplazo = $this->buscarConductorReemplazo($conductor, $plantilla);
+
+    if ($conductorReemplazo) {
+        // Paso 2: Reasignar turnos del conductor original al reemplazo
+        $turnosReasignados = $this->reasignarTurnos($conductor, $conductorReemplazo, $plantilla);
+
+        // Paso 3: Cambiar estado del conductor original a descanso
+        $this->cambiarConductorADescanso($conductor, 'Descanso automático por días acumulados');
+
+        // Paso 4: Actualizar métricas del conductor de reemplazo
+        $this->actualizarMetricasConductor($conductorReemplazo);
+
+        return [
+            'resuelto' => true,
+            'accion' => 'REASIGNACION_CON_DESCANSO',
+            'mensaje' => "Conductor {$conductor->nombre} enviado a descanso. " .
+                        "Turnos reasignados a {$conductorReemplazo->nombre}.",
+            'detalles' => [
+                'conductor_original' => $conductor->id,
+                'conductor_reemplazo' => $conductorReemplazo->id,
+                'turnos_reasignados' => $turnosReasignados,
+                'tipo_descanso' => 'OBLIGATORIO'
+            ],
+            'requiere_atencion_humana' => false,
+            'notificar' => true
+        ];
+    } else {
+        // No hay reemplazo: intentar redistribuir turnos
+        $redistribucion = $this->redistribuirTurnosEntreConductores($conductor, $plantilla);
+
+        if ($redistribucion['exitosa']) {
+            $this->cambiarConductorADescanso($conductor, 'Descanso automático - turnos redistribuidos');
+
+            return [
+                'resuelto' => true,
+                'accion' => 'REDISTRIBUCION_CON_DESCANSO',
+                'mensaje' => "Conductor {$conductor->nombre} enviado a descanso. " .
+                            "Turnos redistribuidos entre {$redistribucion['conductores_usados']} conductores.",
+                'detalles' => [
+                    'conductor_original' => $conductor->id,
+                    'redistribucion' => $redistribucion,
+                    'tipo_descanso' => 'OBLIGATORIO'
+                ],
+                'requiere_atencion_humana' => false,
+                'notificar' => true
+            ];
+        } else {
+            // No se puede resolver automáticamente
+            return [
+                'resuelto' => false,
+                'accion' => 'REQUIERE_INTERVENCION_MANUAL',
+                'mensaje' => "Conductor {$conductor->nombre} requiere descanso obligatorio " .
+                            "pero no hay conductores disponibles para reemplazo.",
+                'detalles' => [
+                    'conductor_id' => $conductor->id,
+                    'dias_acumulados' => $conductor->dias_acumulados,
+                    'motivo_fallo' => 'Sin conductores de reemplazo disponibles'
+                ],
+                'requiere_atencion_humana' => true,
+                'notificar' => true,
+                'prioridad_resolucion' => 'ALTA'
+            ];
+        }
+    }
+}
+
+/**
+ * Resolver conductor con baja eficiencia (<80%)
+ */
+private function resolverBajaEficiencia($plantilla, $validacion)
+{
+    $conductor = $this->obtenerConductorDeValidacion($validacion);
+
+    if (!$conductor) {
+        return $this->crearResultadoError('Conductor no encontrado para validación de eficiencia');
+    }
+
+    Log::info("   📉 Resolviendo baja eficiencia para conductor", [
+        'conductor_id' => $conductor->id,
+        'eficiencia_actual' => $conductor->eficiencia
+    ]);
+
+    // Analizar tendencia de eficiencia
+    $tendencia = $this->analizarTendenciaEficiencia($conductor);
+
+    if ($tendencia['es_tendencia_negativa']) {
+        // Tendencia decreciente: reasignar a rutas menos críticas
+        $reasignacion = $this->reasignarARutasMenosCriticas($conductor, $plantilla);
+
+        if ($reasignacion['exitosa']) {
+            // Programar seguimiento
+            $this->programarSeguimientoConductor($conductor, 'EFICIENCIA_BAJA', 7); // 7 días
+
+            return [
+                'resuelto' => true,
+                'accion' => 'REASIGNACION_RUTAS_MENOS_CRITICAS',
+                'mensaje' => "Conductor {$conductor->nombre} reasignado a rutas menos críticas " .
+                            "debido a baja eficiencia ({$conductor->eficiencia}%).",
+                'detalles' => [
+                    'conductor_id' => $conductor->id,
+                    'eficiencia_anterior' => $conductor->eficiencia,
+                    'rutas_reasignadas' => $reasignacion['rutas'],
+                    'seguimiento_programado' => true
+                ],
+                'requiere_atencion_humana' => false,
+                'notificar' => true
+            ];
+        }
+    }
+
+    // Si es fluctuación temporal: mantener en observación
+    $this->marcarConductorEnObservacion($conductor, 'EFICIENCIA_BAJA');
+
+    return [
+        'resuelto' => true,
+        'accion' => 'OBSERVACION_EFICIENCIA',
+        'mensaje' => "Conductor {$conductor->nombre} marcado para observación por eficiencia baja. " .
+                    "Se monitoreará por 5 días.",
+        'detalles' => [
+            'conductor_id' => $conductor->id,
+            'eficiencia_actual' => $conductor->eficiencia,
+            'tendencia' => $tendencia,
+            'periodo_observacion' => 5
+        ],
+        'requiere_atencion_humana' => false,
+        'notificar' => false // No notificar para observación simple
+    ];
+}
+
+/**
+ * Resolver conductor con baja puntualidad (<85%)
+ */
+private function resolverBajaPuntualidad($plantilla, $validacion)
+{
+    $conductor = $this->obtenerConductorDeValidacion($validacion);
+
+    if (!$conductor) {
+        return $this->crearResultadoError('Conductor no encontrado para validación de puntualidad');
+    }
+
+    Log::info("   ⏰ Resolviendo baja puntualidad para conductor", [
+        'conductor_id' => $conductor->id,
+        'puntualidad_actual' => $conductor->puntualidad
+    ]);
+
+    // Analizar patrón de impuntualidad
+    $patron = $this->analizarPatronImpuntualidad($conductor);
+
+    if ($patron['horarios_problematicos']) {
+        // Reasignar evitando horarios problemáticos
+        $reasignacion = $this->reasignarEvitandoHorarios($conductor, $patron['horarios_problematicos'], $plantilla);
+
+        if ($reasignacion['exitosa']) {
+            return [
+                'resuelto' => true,
+                'accion' => 'REASIGNACION_HORARIOS_OPTIMOS',
+                'mensaje' => "Conductor {$conductor->nombre} reasignado evitando horarios problemáticos " .
+                            "para mejorar puntualidad.",
+                'detalles' => [
+                    'conductor_id' => $conductor->id,
+                    'puntualidad_anterior' => $conductor->puntualidad,
+                    'horarios_evitados' => $patron['horarios_problematicos'],
+                    'nuevos_horarios' => $reasignacion['horarios']
+                ],
+                'requiere_atencion_humana' => false,
+                'notificar' => true
+            ];
+        }
+    }
+
+    // Programar capacitación
+    $this->programarCapacitacionConductor($conductor, 'PUNTUALIDAD');
+
+    return [
+        'resuelto' => true,
+        'accion' => 'CAPACITACION_PROGRAMADA',
+        'mensaje' => "Programada capacitación en puntualidad para conductor {$conductor->nombre}.",
+        'detalles' => [
+            'conductor_id' => $conductor->id,
+            'tipo_capacitacion' => 'PUNTUALIDAD',
+            'puntualidad_actual' => $conductor->puntualidad
+        ],
+        'requiere_atencion_humana' => false,
+        'notificar' => true
+    ];
+}
+
+/**
+ * Resolver turno sin conductor asignado
+ */
+private function resolverTurnoVacio($plantilla, $validacion)
+{
+    $turno = $this->obtenerTurnoDeValidacion($validacion);
+
+    if (!$turno) {
+        return $this->crearResultadoError('Turno no encontrado para validación');
+    }
+
+    Log::info("   🚌 Resolviendo turno vacío", [
+        'turno_id' => $turno->id,
+        'hora_salida' => $turno->hora_salida,
+        'origen' => $turno->origen
+    ]);
+
+    // Buscar conductor disponible con mejor compatibilidad
+    $conductorCompatible = $this->buscarConductorMasCompatible($turno);
+
+    if ($conductorCompatible) {
+        // Asignar conductor al turno
+        $this->asignarConductorATurno($conductorCompatible, $turno);
+
+        return [
+            'resuelto' => true,
+            'accion' => 'ASIGNACION_AUTOMATICA',
+            'mensaje' => "Turno asignado a conductor {$conductorCompatible->nombre} " .
+                        "(compatibilidad: {$conductorCompatible->score_compatibilidad}%).",
+            'detalles' => [
+                'turno_id' => $turno->id,
+                'conductor_asignado' => $conductorCompatible->id,
+                'score_compatibilidad' => $conductorCompatible->score_compatibilidad,
+                'criterios_seleccion' => $conductorCompatible->criterios_usados
+            ],
+            'requiere_atencion_humana' => false,
+            'notificar' => false
+        ];
+    } else {
+        // Intentar usar conductor de back-up
+        $conductorBackup = $this->buscarConductorBackup($turno);
+
+        if ($conductorBackup) {
+            $this->asignarConductorATurno($conductorBackup, $turno);
+
+            return [
+                'resuelto' => true,
+                'accion' => 'ASIGNACION_BACKUP',
+                'mensaje' => "Turno asignado a conductor backup {$conductorBackup->nombre}.",
+                'detalles' => [
+                    'turno_id' => $turno->id,
+                    'conductor_backup' => $conductorBackup->id,
+                    'es_backup' => true
+                ],
+                'requiere_atencion_humana' => true,
+                'notificar' => true
+            ];
+        } else {
+            // No hay conductores disponibles
+            return [
+                'resuelto' => false,
+                'accion' => 'SIN_CONDUCTORES_DISPONIBLES',
+                'mensaje' => "No hay conductores disponibles para turno " .
+                            "{$turno->hora_salida} desde {$turno->origen}.",
+                'detalles' => [
+                    'turno_id' => $turno->id,
+                    'hora_salida' => $turno->hora_salida,
+                    'origen' => $turno->origen,
+                    'conductores_evaluados' => $this->metricas['conductores_evaluados'] ?? 0
+                ],
+                'requiere_atencion_humana' => true,
+                'notificar' => true,
+                'prioridad_resolucion' => 'CRITICA'
+            ];
+        }
+    }
+}
+
+/**
+ * Resolver conductor próximo a descanso (5 días)
+ */
+private function resolverProximoDescanso($plantilla, $validacion)
+{
+    $conductor = $this->obtenerConductorDeValidacion($validacion);
+
+    if (!$conductor) {
+        return $this->crearResultadoError('Conductor no encontrado para validación de próximo descanso');
+    }
+
+    Log::info("   🔜 Resolviendo próximo descanso para conductor", [
+        'conductor_id' => $conductor->id,
+        'dias_acumulados' => $conductor->dias_acumulados
+    ]);
+
+    // Buscar conductor para cubrir cuando llegue el descanso
+    $conductorCobertura = $this->buscarConductorParaCobertura($conductor, $plantilla);
+
+    if ($conductorCobertura) {
+        // Programar transición gradual
+        $this->programarTransicionGradual($conductor, $conductorCobertura, $plantilla);
+
+        return [
+            'resuelto' => true,
+            'accion' => 'TRANSICION_PROGRAMADA',
+            'mensaje' => "Transición programada para conductor {$conductor->nombre}. " .
+                        "Cobertura asignada a {$conductorCobertura->nombre}.",
+            'detalles' => [
+                'conductor_id' => $conductor->id,
+                'conductor_cobertura' => $conductorCobertura->id,
+                'dias_hasta_descanso' => 6 - $conductor->dias_acumulados,
+                'transicion_programada' => true
+            ],
+            'requiere_atencion_humana' => false,
+            'notificar' => true
+        ];
+    } else {
+        // Alertar con tiempo para planificación manual
+        return [
+            'resuelto' => false,
+            'accion' => 'ALERTA_PLANIFICACION_MANUAL',
+            'mensaje' => "Conductor {$conductor->nombre} necesitará descanso en " .
+                        (6 - $conductor->dias_acumulados) . " días. Planificar cobertura.",
+            'detalles' => [
+                'conductor_id' => $conductor->id,
+                'dias_hasta_descanso' => 6 - $conductor->dias_acumulados,
+                'fecha_descanso_estimada' => now()->addDays(6 - $conductor->dias_acumulados)->toDateString()
+            ],
+            'requiere_atencion_humana' => true,
+            'notificar' => true,
+            'prioridad_resolucion' => 'MEDIA'
+        ];
+    }
+}
+
+/**
+ * Resolver conductor con horas excedidas (>12h)
+ */
+private function resolverHorasExcedidas($plantilla, $validacion)
+{
+    $conductor = $this->obtenerConductorDeValidacion($validacion);
+
+    if (!$conductor) {
+        return $this->crearResultadoError('Conductor no encontrado para validación de horas excedidas');
+    }
+
+    Log::info("   ⏱️ Resolviendo horas excedidas para conductor", [
+        'conductor_id' => $conductor->id,
+        'horas_acumuladas' => $conductor->horas_hombre
+    ]);
+
+    // Buscar turnos que se pueden reasignar
+    $turnosReasignables = $this->identificarTurnosReasignables($conductor, $plantilla);
+
+    if (!empty($turnosReasignables)) {
+        $reasignaciones = $this->ejecutarReasignacionesTurnos($turnosReasignables);
+
+        if ($reasignaciones['exitosas'] > 0) {
+            return [
+                'resuelto' => true,
+                'accion' => 'REASIGNACION_REDUCCION_HORAS',
+                'mensaje' => "Reducidas {$reasignaciones['horas_reducidas']} horas para conductor {$conductor->nombre}.",
+                'detalles' => [
+                    'conductor_id' => $conductor->id,
+                    'horas_anteriores' => $conductor->horas_hombre,
+                    'horas_reducidas' => $reasignaciones['horas_reducidas'],
+                    'turnos_reasignados' => $reasignaciones['turnos']
+                ],
+                'requiere_atencion_humana' => false,
+                'notificar' => true
+            ];
+        }
+    }
+
+    // Forzar descanso si no se puede reducir horas
+    $this->cambiarConductorADescanso($conductor, 'Descanso forzado por exceso de horas');
+
+    return [
+        'resuelto' => true,
+        'accion' => 'DESCANSO_FORZADO',
+        'mensaje' => "Conductor {$conductor->nombre} enviado a descanso forzado por exceso de horas.",
+        'detalles' => [
+            'conductor_id' => $conductor->id,
+            'horas_excedidas' => $conductor->horas_hombre,
+            'tipo_descanso' => 'FORZADO_HORAS'
+        ],
+        'requiere_atencion_humana' => true,
+        'notificar' => true
+    ];
+}
+
+/**
+ * =============================================================================
+ * MÉTODOS DE APOYO PARA RESOLUCIÓN
+ * =============================================================================
+ */
+
+private function normalizarValidacion($validacion)
+{
+    if (is_array($validacion)) {
+        // Convertir array a objeto stdClass
+        $obj = new \stdClass();
+        foreach ($validacion as $key => $value) {
+            $obj->$key = $value;
+        }
+        return $obj;
+    }
+
+    return $validacion; // Ya es objeto
+}
+
+private function obtenerConductorDeValidacion($validacion)
+{
+    $conductorId = $validacion->conductor_id ?? null;
+
+    if (!$conductorId) {
+        return null;
+    }
+
+    return Conductor::find($conductorId);
+}
+
+private function obtenerTurnoDeValidacion($validacion)
+{
+    $turnoId = $validacion->turno_id ?? $validacion->entidad_id ?? null;
+
+    if (!$turnoId) {
+        return null;
+    }
+
+    return Turno::find($turnoId);
+}
+
+private function buscarConductorReemplazo($conductorOriginal, $plantilla)
+{
+    return Conductor::where('estado', 'DISPONIBLE')
+        ->where('id', '!=', $conductorOriginal->id)
+        ->where('dias_acumulados', '<', 5) // No próximos a descanso
+        ->where('eficiencia', '>=', 80)
+        ->where('puntualidad', '>=', 85)
+        ->orderByDesc('score_general')
+        ->first();
+}
+
+private function reasignarTurnos($conductorOriginal, $conductorReemplazo, $plantilla)
+{
+    $turnos = Turno::where('conductor_id', $conductorOriginal->id)
+        ->where('plantilla_id', $plantilla->id)
+        ->get();
+
+    $reasignados = 0;
+
+    foreach ($turnos as $turno) {
+        $turno->update(['conductor_id' => $conductorReemplazo->id]);
+        $reasignados++;
+    }
+
+    return $reasignados;
+}
+
+private function cambiarConductorADescanso($conductor, $motivo)
+{
+    $conductor->update([
+        'estado' => 'DESCANSO_FISICO',
+        'dias_acumulados' => 0,
+        'fecha_inicio_descanso' => now(),
+        'motivo_descanso' => $motivo
+    ]);
+
+    // Registrar en historial
+    Log::info("Conductor enviado a descanso", [
+        'conductor_id' => $conductor->id,
+        'motivo' => $motivo
+    ]);
+}
+
+private function actualizarEstadoValidacion($validacion, $resultado)
+{
+    if ($validacion instanceof \App\Models\Validacion) {
+        $validacion->update([
+            'estado' => $resultado['resuelto'] ? 'RESUELTO' : 'REVISION_REQUERIDA',
+            'accion_tomada' => $resultado['accion'],
+            'observaciones' => $resultado['mensaje'],
+            'fecha_resolucion' => now(),
+            'resuelto_por' => 0, // Sistema automático
+            'datos_resolucion' => $resultado['detalles'] ?? []
+        ]);
+    }
+}
+
+private function registrarResolucionEnMetricas($tipo, $resuelto)
+{
+    if (!isset($this->metricas['validaciones_resueltas'])) {
+        $this->metricas['validaciones_resueltas'] = [];
+    }
+
+    if (!isset($this->metricas['validaciones_resueltas'][$tipo])) {
+        $this->metricas['validaciones_resueltas'][$tipo] = [
+            'total' => 0,
+            'resueltas' => 0,
+            'pendientes' => 0
         ];
     }
 
-    private function obtenerTurnosDisponibles()
-    {
-        // Simular turnos disponibles para la fecha
-        // En producción, esto vendría de la base de datos de turnos programados
-        return collect([
-            (object)['id' => 1, 'hora_salida' => '06:00', 'destino' => 'LIMA', 'tipo_servicio' => 'ESTANDAR'],
-            (object)['id' => 2, 'hora_salida' => '08:00', 'destino' => 'CALLAO', 'tipo_servicio' => 'ESTANDAR'],
-            (object)['id' => 3, 'hora_salida' => '10:00', 'destino' => 'NAZCA', 'tipo_servicio' => 'NAZCA'],
-            (object)['id' => 4, 'hora_salida' => '14:00', 'destino' => 'LIMA', 'tipo_servicio' => 'VIP']
+    $this->metricas['validaciones_resueltas'][$tipo]['total']++;
+
+    if ($resuelto) {
+        $this->metricas['validaciones_resueltas'][$tipo]['resueltas']++;
+    } else {
+        $this->metricas['validaciones_resueltas'][$tipo]['pendientes']++;
+    }
+}
+
+private function enviarNotificacionResolucion($validacion, $resultado)
+{
+    // Integrar con NotificacionService cuando esté disponible
+    if (class_exists('\App\Services\NotificacionService')) {
+        $notificacionService = app(\App\Services\NotificacionService::class);
+
+        $titulo = $resultado['resuelto'] ?
+            "✅ Validación resuelta automáticamente" :
+            "⚠️ Validación requiere atención";
+
+        $notificacionService->enviar(
+            $this->obtenerSupervisores(),
+            \App\Services\NotificacionService::CATEGORIA_VALIDACION,
+            'RESOLUCION_AUTOMATICA',
+            $titulo,
+            $resultado['mensaje'],
+            [
+                'validacion_id' => $validacion->id ?? null,
+                'tipo_validacion' => $validacion->tipo,
+                'accion_tomada' => $resultado['accion'],
+                'requiere_atencion' => $resultado['requiere_atencion_humana'] ?? false
+            ],
+            $resultado['requiere_atencion_humana'] ?
+                \App\Services\NotificacionService::PRIORIDAD_ALTA :
+                \App\Services\NotificacionService::PRIORIDAD_NORMAL
+        );
+    }
+}
+
+private function crearResultadoError($mensaje)
+{
+    return [
+        'resuelto' => false,
+        'accion' => 'ERROR',
+        'mensaje' => $mensaje,
+        'requiere_atencion_humana' => true,
+        'notificar' => true
+    ];
+}
+
+private function marcarValidacionParaRevisionManual($validacion, $motivoError)
+{
+    if ($validacion instanceof \App\Models\Validacion) {
+        $validacion->update([
+            'estado' => 'ERROR_AUTOMATICO',
+            'observaciones' => 'Error en resolución automática: ' . $motivoError,
+            'requiere_revision_manual' => true,
+            'fecha_error' => now()
         ]);
     }
+}
 
-    private function buscarMejorConductorParaTurno($turno, $conductores, $conductoresAsignados)
-    {
-        return $conductores
-            ->whereNotIn('id', $conductoresAsignados->pluck('id'))
-            ->filter(function($conductor) use ($turno) {
-                // Verificar compatibilidad horaria
-                $horaInicio = Carbon::parse($turno->hora_salida);
-                $franjaHoraria = $this->obtenerFranjaHoraria($horaInicio);
+private function resolverValidacionGenerica($plantilla, $validacion)
+{
+    // Para tipos de validación no implementados específicamente
+    Log::warning("Tipo de validación no implementado", [
+        'tipo' => $validacion->tipo
+    ]);
 
-                return $conductor->disponibilidad_horarios[$franjaHoraria] ?? true;
-            })
-            ->sortByDesc('score_compatibilidad')
-            ->first();
-    }
+    return [
+        'resuelto' => false,
+        'accion' => 'TIPO_NO_IMPLEMENTADO',
+        'mensaje' => "Tipo de validación '{$validacion->tipo}' no tiene resolver específico implementado.",
+        'requiere_atencion_humana' => true,
+        'notificar' => false
+    ];
+}
 
-    private function obtenerFranjaHoraria($hora)
-    {
-        $hour = $hora->hour;
+/**
+ * =============================================================================
+ * MÉTODOS DE APOYO ADICIONALES
+ * =============================================================================
+ */
 
-        if ($hour >= 0 && $hour < 6) return 'madrugada';
-        if ($hour >= 6 && $hour < 12) return 'mañana';
-        if ($hour >= 12 && $hour < 18) return 'tarde';
-        return 'noche';
-    }
+private function analizarTendenciaEficiencia($conductor)
+{
+    // Simular análisis de tendencia (implementar con datos históricos reales)
+    $eficienciaHistorica = [85, 82, 79, 77]; // Últimos 4 registros
 
-    private function identificarTurnosSinAsignar($prePlantilla)
-    {
-        $turnosAsignados = collect($prePlantilla)->pluck('turno_id');
-        $todosLosTurnos = $this->obtenerTurnosDisponibles();
+    $tendencia = count($eficienciaHistorica) >= 3;
+    $esNegativa = $tendencia && end($eficienciaHistorica) < $eficienciaHistorica[0];
 
-        return $todosLosTurnos->whereNotIn('id', $turnosAsignados);
-    }
+    return [
+        'es_tendencia_negativa' => $esNegativa,
+        'datos_historicos' => $eficienciaHistorica,
+        'pendiente' => $esNegativa ? -2.5 : 1.2
+    ];
+}
 
-    private function buscarMejorConductorNazca($turno, $conductoresNazca, $prePlantilla)
-    {
-        $conductoresAsignados = collect($prePlantilla)->pluck('conductor_id');
+private function buscarConductorMasCompatible($turno)
+{
+    $conductores = Conductor::where('estado', 'DISPONIBLE')
+        ->get();
 
-        return $conductoresNazca
-            ->whereNotIn('id', $conductoresAsignados)
-            ->first();
-    }
+    $mejorConductor = null;
+    $mejorScore = 0;
 
-    private function validarFrescosAntes12pm($plantilla)
-    {
-        $validaciones = [];
+    foreach ($conductores as $conductor) {
+        $score = $this->calcularCompatibilidad($conductor, $turno);
 
-        foreach ($plantilla->turnos as $turno) {
-            $horaSalida = Carbon::parse($turno->turno->hora_salida);
-            $horaFin = Carbon::parse($turno->turno->hora_llegada);
-
-            if ($turno->turno->numero_salidas == 1 && $horaFin->hour <= 12) {
-                $validaciones[] = [
-                    'tipo' => 'FRESCO_ANTES_12PM',
-                    'severidad' => 'ADVERTENCIA',
-                    'conductor_id' => $turno->conductor_id,
-                    'plantilla_id' => $plantilla->id,
-                    'descripcion' => 'Conductor fresco con término antes de 12 p.m. - Evaluar segunda salida',
-                    'estado' => 'PENDIENTE',
-                    'datos_adicionales' => [
-                        'hora_fin_turno' => $horaFin->format('H:i'),
-                        'puede_segunda_salida' => true
-                    ]
-                ];
-            }
-        }
-
-        return $validaciones;
-    }
-
-    private function validarMVAntes9am($plantilla)
-    {
-        $validaciones = [];
-
-        foreach ($plantilla->turnos as $turno) {
-            $horaFin = Carbon::parse($turno->turno->hora_llegada);
-            $conductor = $turno->conductor;
-
-            if ($turno->turno->numero_salidas == 1 &&
-                $horaFin->hour <= 9 &&
-                $conductor->tuvo_servicio_ayer()) {
-
-                $validaciones[] = [
-                    'tipo' => 'MV_ANTES_9AM',
-                    'severidad' => 'CRITICA',
-                    'conductor_id' => $turno->conductor_id,
-                    'plantilla_id' => $plantilla->id,
-                    'descripcion' => 'Conductor MV con término antes de 9 a.m. - Verificar horas mínimas',
-                    'estado' => 'PENDIENTE',
-                    'datos_adicionales' => [
-                        'hora_fin_turno' => $horaFin->format('H:i'),
-                        'horas_acumuladas' => $conductor->calcular_horas_acumuladas()
-                    ]
-                ];
-            }
-        }
-
-        return $validaciones;
-    }
-
-    private function validacionesAdicionales($plantilla)
-    {
-        $validaciones = [];
-
-        // Validar conductores próximos a descanso obligatorio
-        foreach ($plantilla->turnos as $turno) {
-            if ($turno->conductor->dias_acumulados >= $this->configuracion['max_dias_sin_descanso'] - 1) {
-                $validaciones[] = [
-                    'tipo' => 'PROXIMO_DESCANSO',
-                    'severidad' => 'ADVERTENCIA',
-                    'conductor_id' => $turno->conductor_id,
-                    'plantilla_id' => $plantilla->id,
-                    'descripcion' => 'Conductor próximo a descanso obligatorio',
-                    'estado' => 'PENDIENTE',
-                    'datos_adicionales' => [
-                        'dias_acumulados' => $turno->conductor->dias_acumulados
-                    ]
-                ];
-            }
-        }
-
-        return $validaciones;
-    }
-
-    private function resolverValidacionCritica($plantilla, $validacion)
-    {
-        // Implementar lógica de resolución automática de validaciones críticas
-        Log::info("🔧 Resolviendo validación crítica: {$validacion['tipo']}");
-
-        // Por ahora, marcamos como revisada
-        if ($validacion instanceof Validacion) {
-            $validacion->update([
-                'estado' => 'REVISADA',
-                'observaciones' => 'Revisión automática del sistema de optimización'
-            ]);
+        if ($score > $mejorScore) {
+            $mejorScore = $score;
+            $mejorConductor = $conductor;
+            $mejorConductor->score_compatibilidad = $score;
         }
     }
 
-    private function registrarHistorial($estado, $resultado, $error = null)
-    {
-        HistorialPlanificacion::create([
-            'fecha_planificacion' => $this->fechaPlanificacion,
-            'estado' => $estado,
-            'resultado' => $resultado,
-            'error' => $error,
-            'metricas' => $this->metricas,
-            'configuracion_utilizada' => $this->configuracion,
-            'created_by' => 1 // Sistema
-        ]);
+    return $mejorScore >= 60 ? $mejorConductor : null; // Mínimo 60% compatibilidad
+}
+
+private function calcularCompatibilidad($conductor, $turno)
+{
+    $score = 0;
+
+    // Factor proximidad (30%)
+    if ($conductor->origen === $turno->origen) {
+        $score += 30;
     }
 
-    /**
-     * Método público para obtener métricas de la última ejecución
-     */
-    public function obtenerMetricas()
-    {
-        return $this->metricas;
+    // Factor puntualidad (25%)
+    $score += ($conductor->puntualidad / 100) * 25;
+
+    // Factor eficiencia (25%)
+    $score += ($conductor->eficiencia / 100) * 25;
+
+    // Factor disponibilidad (20%)
+    if ($this->conductorDisponibleParaHora($conductor, $turno->hora_salida)) {
+        $score += 20;
     }
 
-    /**
-     * Método público para actualizar configuración
-     */
-    public function actualizarConfiguracion($nuevaConfiguracion)
-    {
-        $this->configuracion = array_merge($this->configuracion, $nuevaConfiguracion);
-    }
+    return round($score, 2);
+}
+
+private function conductorDisponibleParaHora($conductor, $horaSalida)
+{
+    // Verificar si el conductor está disponible para la hora específica
+    // Implementar lógica específica según reglas de negocio
+    return true; // Simplificado por ahora
+}
+
+private function obtenerSupervisores()
+{
+    // Retornar lista de supervisores para notificaciones
+    return \App\Models\User::whereHas('roles', function($query) {
+        $query->whereIn('name', ['admin', 'supervisor']);
+    })->get();
 }
