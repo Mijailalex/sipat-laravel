@@ -7,13 +7,29 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Console\Scheduling\Schedule;
 use App\Services\ServicioPlanificacionAutomatizada;
 use App\Services\ServicioBackupAutomatizado;
+use App\Services\CacheMetricasService;
+use App\Services\NotificacionService;
+use App\Services\AuditoriaService;
 use App\Models\Parametro;
 use App\Models\User;
+use App\Models\Conductor;
+use App\Models\Validacion;
+use App\Models\Turno;
+use App\Models\HistorialPlanificacion;
 use App\View\Composers\DashboardComposer;
 use App\View\Composers\MenuComposer;
+use App\Observers\ConductorObserver;
+use App\Observers\ValidacionObserver;
+use App\Observers\TurnoObserver;
+use App\Http\Middleware\LogActividades;
+use App\Http\Middleware\VerificarEstadoSistema;
 
 class SipatServiceProvider extends ServiceProvider
 {
@@ -23,6 +39,9 @@ class SipatServiceProvider extends ServiceProvider
     public array $singletons = [
         ServicioPlanificacionAutomatizada::class => ServicioPlanificacionAutomatizada::class,
         ServicioBackupAutomatizado::class => ServicioBackupAutomatizado::class,
+        CacheMetricasService::class => CacheMetricasService::class,
+        NotificacionService::class => NotificacionService::class,
+        AuditoriaService::class => AuditoriaService::class,
     ];
 
     /**
@@ -39,9 +58,24 @@ class SipatServiceProvider extends ServiceProvider
             return new ServicioBackupAutomatizado();
         });
 
+        $this->app->singleton(CacheMetricasService::class, function ($app) {
+            return new CacheMetricasService();
+        });
+
+        $this->app->singleton(NotificacionService::class, function ($app) {
+            return new NotificacionService();
+        });
+
+        $this->app->singleton(AuditoriaService::class, function ($app) {
+            return new AuditoriaService();
+        });
+
         // Registrar aliases para facilitar el acceso
         $this->app->alias(ServicioPlanificacionAutomatizada::class, 'sipat.planificacion');
         $this->app->alias(ServicioBackupAutomatizado::class, 'sipat.backup');
+        $this->app->alias(CacheMetricasService::class, 'sipat.cache');
+        $this->app->alias(NotificacionService::class, 'sipat.notificaciones');
+        $this->app->alias(AuditoriaService::class, 'sipat.auditoria');
 
         // Registrar configuraciones personalizadas
         $this->registerCustomConfigurations();
@@ -88,6 +122,12 @@ class SipatServiceProvider extends ServiceProvider
         // Registrar middleware personalizado
         $this->registerCustomMiddleware();
 
+        // Registrar comandos de consola personalizados
+        $this->registerConsoleCommands();
+
+        // Configurar tareas programadas
+        $this->configureScheduledTasks();
+
         // Registrar macros después de que Laravel esté completamente cargado
         $this->app->booted(function () {
             $this->registerPaginationMacros();
@@ -129,6 +169,25 @@ class SipatServiceProvider extends ServiceProvider
             'sipat.password_min_length' => 8,
             'sipat.max_login_attempts' => 5,
             'sipat.lockout_duration' => 15, // minutos
+
+            // Configuraciones específicas de planificación
+            'sipat.planificacion.dias_maximos_sin_descanso' => 6,
+            'sipat.planificacion.horas_minimas_descanso' => 12,
+            'sipat.planificacion.eficiencia_minima' => 80,
+            'sipat.planificacion.puntualidad_minima' => 85,
+            'sipat.planificacion.rutas_cortas_maximas_semanales' => 4,
+            'sipat.planificacion.rutas_largas_minimas_semanales' => 8,
+
+            // Configuraciones de monitoreo
+            'sipat.monitoreo.intervalo_validaciones' => 60, // minutos
+            'sipat.monitoreo.tiempo_limite_respuesta_critica' => 30, // minutos
+            'sipat.monitoreo.umbral_cpu' => 80, // porcentaje
+            'sipat.monitoreo.umbral_memoria' => 85, // porcentaje
+
+            // Configuraciones de notificaciones
+            'sipat.notificaciones.email_admin' => env('SIPAT_ADMIN_EMAIL', 'admin@sipat.com'),
+            'sipat.notificaciones.canales_habilitados' => ['mail', 'database'],
+            'sipat.notificaciones.retencion_dias' => 30,
         ]);
     }
 
@@ -155,56 +214,33 @@ class SipatServiceProvider extends ServiceProvider
                 if (!$fecha) return '';
 
                 try {
-                    $carbon = $fecha instanceof \Carbon\Carbon ? $fecha : \Carbon\Carbon::parse($fecha);
-                    return $carbon->locale('es')->format($formato);
+                    $carbon = $fecha instanceof \Carbon\Carbon ?
+                        $fecha : \Carbon\Carbon::parse($fecha);
+
+                    return $carbon->locale('es')->isoFormat($this->convertirFormatoFecha($formato));
                 } catch (\Exception $e) {
                     return $fecha;
                 }
             }
         }
 
-        // Helper para obtener estado del conductor con icono
-        if (!function_exists('estado_conductor_badge')) {
-            function estado_conductor_badge($estado) {
-                $badges = [
-                    'DISPONIBLE' => '<span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>Disponible</span>',
-                    'DESCANSO_FISICO' => '<span class="badge bg-warning"><i class="fas fa-bed me-1"></i>Descanso Físico</span>',
-                    'DESCANSO_SEMANAL' => '<span class="badge bg-info"><i class="fas fa-calendar me-1"></i>Descanso Semanal</span>',
-                    'VACACIONES' => '<span class="badge bg-primary"><i class="fas fa-umbrella-beach me-1"></i>Vacaciones</span>',
-                    'SUSPENDIDO' => '<span class="badge bg-danger"><i class="fas fa-ban me-1"></i>Suspendido</span>',
-                    'FALTO_OPERATIVO' => '<span class="badge bg-secondary"><i class="fas fa-exclamation-triangle me-1"></i>Falta Operativa</span>',
-                    'FALTO_NO_OPERATIVO' => '<span class="badge bg-dark"><i class="fas fa-times me-1"></i>Falta No Operativa</span>',
-                ];
-
-                return $badges[$estado] ?? '<span class="badge bg-secondary">' . $estado . '</span>';
-            }
-        }
-
-        // Helper para calcular progreso de eficiencia
-        if (!function_exists('progreso_eficiencia')) {
-            function progreso_eficiencia($eficiencia) {
-                $color = $eficiencia >= 90 ? 'success' :
-                        ($eficiencia >= 80 ? 'warning' : 'danger');
-
-                return [
-                    'porcentaje' => $eficiencia,
-                    'color' => $color,
-                    'clase_css' => "progress-bar bg-{$color}"
-                ];
-            }
-        }
-
-        // Helper para obtener icono de severidad
-        if (!function_exists('icono_severidad')) {
-            function icono_severidad($severidad) {
-                $iconos = [
+        // Helper para estados con iconos
+        if (!function_exists('estado_icono')) {
+            function estado_icono($estado) {
+                return match(strtoupper($estado)) {
+                    'DISPONIBLE' => '<i class="fas fa-check-circle text-success"></i>',
+                    'OCUPADO' => '<i class="fas fa-clock text-warning"></i>',
+                    'DESCANSO' => '<i class="fas fa-bed text-info"></i>',
+                    'INACTIVO' => '<i class="fas fa-times-circle text-danger"></i>',
+                    'MANTENIMIENTO' => '<i class="fas fa-tools text-secondary"></i>',
+                    'PENDIENTE' => '<i class="fas fa-hourglass-half text-warning"></i>',
+                    'APROBADO' => '<i class="fas fa-check text-success"></i>',
+                    'RECHAZADO' => '<i class="fas fa-times text-danger"></i>',
+                    'CRITICA' => '<i class="fas fa-exclamation-triangle text-danger"></i>',
+                    'ADVERTENCIA' => '<i class="fas fa-exclamation-circle text-warning"></i>',
                     'INFO' => '<i class="fas fa-info-circle text-info"></i>',
-                    'ADVERTENCIA' => '<i class="fas fa-exclamation-triangle text-warning"></i>',
-                    'CRITICA' => '<i class="fas fa-times-circle text-danger"></i>',
-                    'EMERGENCIA' => '<i class="fas fa-exclamation-circle text-danger"></i>',
-                ];
-
-                return $iconos[$severidad] ?? '<i class="fas fa-question-circle text-muted"></i>';
+                    default => '<i class="fas fa-question-circle text-muted"></i>'
+                };
             }
         }
 
@@ -221,6 +257,74 @@ class SipatServiceProvider extends ServiceProvider
                 return round($bytes, $precision) . ' ' . $units[$pow];
             }
         }
+
+        // Helper para verificar permisos de usuario
+        if (!function_exists('usuario_puede')) {
+            function usuario_puede($permiso, $usuario = null) {
+                $usuario = $usuario ?: auth()->user();
+                if (!$usuario) return false;
+
+                return $usuario->can($permiso);
+            }
+        }
+
+        // Helper para obtener métricas en tiempo real
+        if (!function_exists('metrica_tiempo_real')) {
+            function metrica_tiempo_real($metrica, $parametros = []) {
+                try {
+                    $cacheService = app(CacheMetricasService::class);
+                    return $cacheService->obtenerMetrica($metrica, $parametros);
+                } catch (\Exception $e) {
+                    Log::warning("Error obteniendo métrica {$metrica}: " . $e->getMessage());
+                    return null;
+                }
+            }
+        }
+
+        // Helper para validar horarios de trabajo
+        if (!function_exists('validar_horario_trabajo')) {
+            function validar_horario_trabajo($horaInicio, $horaFin, $fechaTrabajo = null) {
+                try {
+                    $inicio = \Carbon\Carbon::parse($horaInicio);
+                    $fin = \Carbon\Carbon::parse($horaFin);
+                    $fecha = $fechaTrabajo ? \Carbon\Carbon::parse($fechaTrabajo) : now();
+
+                    // Validar que sea día laborable (lunes a domingo permitido)
+                    $esFinDeSemana = $fecha->isWeekend();
+
+                    // Validar duración mínima y máxima del turno
+                    $duracionHoras = $fin->diffInHours($inicio);
+                    $duracionValida = $duracionHoras >= 4 && $duracionHoras <= 12;
+
+                    return [
+                        'valido' => $duracionValida && $fin->gt($inicio),
+                        'duracion_horas' => $duracionHoras,
+                        'es_fin_semana' => $esFinDeSemana,
+                        'warnings' => []
+                    ];
+                } catch (\Exception $e) {
+                    return [
+                        'valido' => false,
+                        'error' => $e->getMessage()
+                    ];
+                }
+            }
+        }
+    }
+
+    /**
+     * Convertir formato de fecha de PHP a formato ICU
+     */
+    private function convertirFormatoFecha($formato)
+    {
+        $conversiones = [
+            'd/m/Y' => 'DD/MM/YYYY',
+            'd/m/Y H:i' => 'DD/MM/YYYY HH:mm',
+            'Y-m-d' => 'YYYY-MM-DD',
+            'Y-m-d H:i:s' => 'YYYY-MM-DD HH:mm:ss',
+        ];
+
+        return $conversiones[$formato] ?? $formato;
     }
 
     /**
@@ -235,19 +339,43 @@ class SipatServiceProvider extends ServiceProvider
                 'data' => $data,
                 'message' => $message,
                 'timestamp' => now()->toISOString(),
+                'version' => config('sipat.version'),
+                'sistema' => config('sipat.short_name')
+            ], $status);
+        });
+
+        // Macro para respuesta de error estandarizada
+        \Response::macro('sipatError', function ($message, $errors = null, $status = 400) {
+            return response()->json([
+                'success' => false,
+                'message' => $message,
+                'errors' => $errors,
+                'timestamp' => now()->toISOString(),
                 'version' => config('sipat.version')
             ], $status);
+        });
+
+        // Macro para colección con metadatos
+        \Illuminate\Database\Eloquent\Collection::macro('conMetadatos', function ($metadatos = []) {
+            return [
+                'data' => $this->toArray(),
+                'meta' => array_merge([
+                    'total' => $this->count(),
+                    'timestamp' => now()->toISOString()
+                ], $metadatos)
+            ];
         });
     }
 
     /**
-     * Registrar macros de paginación (movido al boot con corrección)
+     * Registrar macros de paginación
      */
     private function registerPaginationMacros(): void
     {
-        // Macro para paginación con información adicional
         try {
-            if (class_exists('\Illuminate\Pagination\LengthAwarePaginator') && method_exists('\Illuminate\Pagination\LengthAwarePaginator', 'macro')) {
+            if (class_exists('\Illuminate\Pagination\LengthAwarePaginator') &&
+                method_exists('\Illuminate\Pagination\LengthAwarePaginator', 'macro')) {
+
                 \Illuminate\Pagination\LengthAwarePaginator::macro('toSipatArray', function () {
                     return [
                         'data' => $this->items(),
@@ -265,6 +393,10 @@ class SipatServiceProvider extends ServiceProvider
                             'last' => $this->url($this->lastPage()),
                             'prev' => $this->previousPageUrl(),
                             'next' => $this->nextPageUrl(),
+                        ],
+                        'meta' => [
+                            'timestamp' => now()->toISOString(),
+                            'sistema' => config('sipat.short_name')
                         ]
                     ];
                 });
@@ -285,10 +417,13 @@ class SipatServiceProvider extends ServiceProvider
                 $configuraciones = Parametro::whereIn('clave', [
                     'zona_horaria',
                     'items_por_pagina',
-                    'nombre_empresa'
+                    'nombre_empresa',
+                    'dias_maximos_sin_descanso',
+                    'eficiencia_minima_conductor',
+                    'puntualidad_minima_conductor'
                 ])->get()->pluck('valor', 'clave');
 
-                // Aplicar configuraciones
+                // Aplicar configuraciones dinámicamente
                 if ($configuraciones->has('zona_horaria')) {
                     config(['app.timezone' => $configuraciones->get('zona_horaria')]);
                     date_default_timezone_set($configuraciones->get('zona_horaria'));
@@ -297,6 +432,9 @@ class SipatServiceProvider extends ServiceProvider
                 if ($configuraciones->has('items_por_pagina')) {
                     config(['sipat.pagination' => (int) $configuraciones->get('items_por_pagina')]);
                 }
+
+                // Almacenar configuraciones en cache para acceso rápido
+                Cache::put('sipat_runtime_config', $configuraciones->toArray(), 3600);
             }
         } catch (\Exception $e) {
             Log::warning('No se pudo inicializar configuración del sistema: ' . $e->getMessage());
@@ -308,14 +446,30 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerViewComposers(): void
     {
-        // Composer para el dashboard
+        // Composer para el dashboard con métricas
         View::composer('dashboard.*', function ($view) {
-            // Composer básico sin clase externa por ahora
+            try {
+                $metricas = app(CacheMetricasService::class)->obtenerMetricasDashboard();
+                $view->with('metricas_dashboard', $metricas);
+            } catch (\Exception $e) {
+                Log::warning('Error cargando métricas para dashboard: ' . $e->getMessage());
+                $view->with('metricas_dashboard', []);
+            }
         });
 
         // Composer para el menú de navegación
         View::composer('layouts.app', function ($view) {
-            // Composer básico sin clase externa por ahora
+            try {
+                $notificacionesPendientes = auth()->check() ?
+                    app(NotificacionService::class)->contarPendientes(auth()->id()) : 0;
+
+                $view->with([
+                    'notificaciones_pendientes' => $notificacionesPendientes,
+                    'menu_items' => $this->obtenerItemsMenu()
+                ]);
+            } catch (\Exception $e) {
+                Log::warning('Error cargando datos del menú: ' . $e->getMessage());
+            }
         });
 
         // Composer global con variables del sistema
@@ -323,19 +477,112 @@ class SipatServiceProvider extends ServiceProvider
             $view->with([
                 'sipat_version' => config('sipat.version'),
                 'sipat_name' => config('sipat.name'),
+                'sipat_short_name' => config('sipat.short_name'),
                 'usuario_actual' => auth()->user(),
                 'es_admin' => auth()->check() && auth()->user()->hasRole('admin'),
-                'configuracion_sistema' => app('sipat.config')
+                'configuracion_sistema' => app('sipat.config'),
+                'zona_horaria_sistema' => config('sipat.timezone')
             ]);
         });
 
-        // Composer para notificaciones
+        // Composer para notificaciones en tiempo real
         View::composer(['layouts.app', 'dashboard.*'], function ($view) {
             if (auth()->check()) {
-                $notificaciones = $this->obtenerNotificacionesUsuario();
-                $view->with('notificaciones_usuario', $notificaciones);
+                try {
+                    $notificaciones = app(NotificacionService::class)
+                        ->obtenerRecientes(auth()->id(), 5);
+
+                    $view->with('notificaciones_recientes', $notificaciones);
+                } catch (\Exception $e) {
+                    Log::warning('Error cargando notificaciones: ' . $e->getMessage());
+                    $view->with('notificaciones_recientes', collect([]));
+                }
             }
         });
+    }
+
+    /**
+     * Obtener items del menú según permisos del usuario
+     */
+    private function obtenerItemsMenu(): array
+    {
+        if (!auth()->check()) {
+            return [];
+        }
+
+        $usuario = auth()->user();
+        $items = [];
+
+        // Dashboard siempre visible para usuarios autenticados
+        $items[] = [
+            'title' => 'Dashboard',
+            'route' => 'dashboard',
+            'icon' => 'fas fa-tachometer-alt'
+        ];
+
+        // Módulo de conductores
+        if ($usuario->can('ver_conductores')) {
+            $items[] = [
+                'title' => 'Conductores',
+                'route' => 'conductores.index',
+                'icon' => 'fas fa-users',
+                'badge' => metrica_tiempo_real('conductores_disponibles')
+            ];
+        }
+
+        // Módulo de planificación
+        if ($usuario->can('gestionar_planificacion')) {
+            $items[] = [
+                'title' => 'Planificación',
+                'icon' => 'fas fa-calendar-alt',
+                'children' => [
+                    ['title' => 'Turnos', 'route' => 'turnos.index'],
+                    ['title' => 'Rutas Cortas', 'route' => 'rutas-cortas.index'],
+                    ['title' => 'Asignaciones', 'route' => 'asignaciones.index']
+                ]
+            ];
+        }
+
+        // Módulo de validaciones
+        if ($usuario->can('ver_validaciones')) {
+            $validacionesPendientes = metrica_tiempo_real('validaciones_pendientes');
+            $items[] = [
+                'title' => 'Validaciones',
+                'route' => 'validaciones.index',
+                'icon' => 'fas fa-clipboard-check',
+                'badge' => $validacionesPendientes > 0 ? $validacionesPendientes : null,
+                'badge_class' => $validacionesPendientes > 0 ? 'bg-warning' : ''
+            ];
+        }
+
+        // Módulo de reportes
+        if ($usuario->can('ver_reportes')) {
+            $items[] = [
+                'title' => 'Reportes',
+                'icon' => 'fas fa-chart-bar',
+                'children' => [
+                    ['title' => 'Eficiencia', 'route' => 'reportes.eficiencia'],
+                    ['title' => 'Turnos', 'route' => 'reportes.turnos'],
+                    ['title' => 'Validaciones', 'route' => 'reportes.validaciones']
+                ]
+            ];
+        }
+
+        // Módulo de administración
+        if ($usuario->can('administrar_sistema')) {
+            $items[] = [
+                'title' => 'Administración',
+                'icon' => 'fas fa-cogs',
+                'children' => [
+                    ['title' => 'Usuarios', 'route' => 'admin.usuarios.index'],
+                    ['title' => 'Configuración', 'route' => 'admin.configuracion.index'],
+                    ['title' => 'Logs', 'route' => 'admin.logs.index'],
+                    ['title' => 'Backups', 'route' => 'admin.backups.index']
+                ]
+            ];
+        }
+
+        return $items;
     }
 
     /**
@@ -343,41 +590,52 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerBladeDirectives(): void
     {
-        // Directiva para verificar permisos
-        Blade::directive('sipat_can', function ($permission) {
-            return "<?php if(auth()->check() && auth()->user()->can({$permission})): ?>";
+        // Directiva para mostrar estados con iconos
+        Blade::directive('estado', function ($expression) {
+            return "<?php echo estado_icono($expression); ?>";
         });
 
-        Blade::directive('endsipat_can', function () {
+        // Directiva para formatear fechas en español
+        Blade::directive('fechaEs', function ($expression) {
+            return "<?php echo fecha_es($expression); ?>";
+        });
+
+        // Directiva para verificar permisos
+        Blade::directive('permiso', function ($expression) {
+            return "<?php if(usuario_puede($expression)): ?>";
+        });
+
+        Blade::directive('endpermiso', function () {
             return "<?php endif; ?>";
         });
 
-        // Directiva para mostrar estado del conductor
-        Blade::directive('estado_conductor', function ($estado) {
-            return "<?php echo estado_conductor_badge({$estado}); ?>";
+        // Directiva para mostrar métricas en tiempo real
+        Blade::directive('metrica', function ($expression) {
+            return "<?php echo metrica_tiempo_real($expression) ?? 'N/A'; ?>";
         });
 
-        // Directiva para formatear fechas
-        Blade::directive('fecha', function ($fecha) {
-            return "<?php echo fecha_es({$fecha}); ?>";
+        // Directiva para formatear tamaños de archivo
+        Blade::directive('bytes', function ($expression) {
+            return "<?php echo formatear_bytes($expression); ?>";
         });
 
-        // Directiva para mostrar progreso
-        Blade::directive('progreso', function ($valor) {
-            return "<?php
-                \$prog = progreso_eficiencia({$valor});
-                echo '<div class=\"progress\"><div class=\"' . \$prog['clase_css'] . '\" style=\"width: ' . \$prog['porcentaje'] . '%\">' . \$prog['porcentaje'] . '%</div></div>';
-            ?>";
+        // Directiva condicional para roles
+        Blade::directive('rol', function ($expression) {
+            return "<?php if(auth()->check() && auth()->user()->hasRole($expression)): ?>";
         });
 
-        // Directiva para incluir scripts de SIPAT
-        Blade::directive('sipat_scripts', function () {
-            return "<?php echo view('layouts.partials.sipat-scripts')->render(); ?>";
+        Blade::directive('endrol', function () {
+            return "<?php endif; ?>";
         });
 
-        // Directiva para mostrar icono de severidad
-        Blade::directive('severidad', function ($severidad) {
-            return "<?php echo icono_severidad({$severidad}); ?>";
+        // Directiva para alertas de validaciones críticas
+        Blade::directive('alertaCritica', function ($expression) {
+            return "<?php if(metrica_tiempo_real('validaciones_criticas') > 0): ?>
+                        <div class='alert alert-danger'>
+                            <i class='fas fa-exclamation-triangle'></i>
+                            Hay validaciones críticas pendientes
+                        </div>
+                    <?php endif; ?>";
         });
     }
 
@@ -386,40 +644,60 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerAuthorizationGates(): void
     {
-        // Gate para administración completa
-        Gate::define('administrar_sistema', function (User $user) {
-            return $user->hasRole('admin');
+        // Gate para verificar si puede gestionar conductores
+        Gate::define('gestionar_conductores', function (User $user) {
+            return $user->hasRole(['admin', 'supervisor', 'planificador']);
         });
 
-        // Gate para gestión de planificación
+        // Gate para verificar si puede ver métricas avanzadas
+        Gate::define('ver_metricas_avanzadas', function (User $user) {
+            return $user->hasRole(['admin', 'supervisor']);
+        });
+
+        // Gate para verificar si puede gestionar planificación
         Gate::define('gestionar_planificacion', function (User $user) {
-            return $user->hasAnyRole(['admin', 'supervisor']);
-        });
-
-        // Gate para solo lectura
-        Gate::define('solo_lectura', function (User $user) {
-            return $user->hasRole('auditor');
-        });
-
-        // Gate dinámico para conductores
-        Gate::define('gestionar_conductor', function (User $user, $conductor) {
-            if ($user->hasRole('admin')) return true;
-            if ($user->hasRole('supervisor')) return true;
-            if ($user->hasRole('operador')) {
-                // Los operadores solo pueden gestionar conductores de su subempresa
-                return $user->subempresa === $conductor->subempresa;
-            }
-            return false;
-        });
-
-        // Gate para backups
-        Gate::define('gestionar_backups', function (User $user) {
-            return $user->hasRole('admin');
+            return $user->hasRole(['admin', 'planificador']);
         });
 
         // Gate para validaciones críticas
         Gate::define('resolver_validaciones_criticas', function (User $user) {
-            return $user->hasAnyRole(['admin', 'supervisor']);
+            return $user->hasRole(['admin', 'supervisor']);
+        });
+
+        // Gate para administración del sistema
+        Gate::define('administrar_sistema', function (User $user) {
+            return $user->hasRole('admin');
+        });
+
+        // Gate para acceso a backups
+        Gate::define('gestionar_backups', function (User $user) {
+            return $user->hasRole('admin');
+        });
+
+        // Gate para ver logs del sistema
+        Gate::define('ver_logs_sistema', function (User $user) {
+            return $user->hasRole(['admin', 'supervisor']);
+        });
+
+        // Gate dinámico para verificar límites operacionales
+        Gate::define('exceder_limites_planificacion', function (User $user, $tipo_limite) {
+            if (!$user->hasRole(['admin', 'supervisor'])) {
+                return false;
+            }
+
+            // Verificar límites específicos según el tipo
+            return match($tipo_limite) {
+                'horas_extras' => $user->hasRole('admin'),
+                'descansos_minimos' => $user->hasRole(['admin', 'supervisor']),
+                'rutas_adicionales' => true,
+                default => false
+            };
+        });
+
+        // Gate para operaciones de emergencia
+        Gate::define('operaciones_emergencia', function (User $user) {
+            return $user->hasRole('admin') &&
+                   sipat_config('permitir_operaciones_emergencia', false);
         });
     }
 
@@ -428,48 +706,94 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerCustomValidators(): void
     {
+        // Validador para horarios de trabajo
+        Validator::extend('horario_trabajo_valido', function ($attribute, $value, $parameters, $validator) {
+            $data = $validator->getData();
+
+            if (!isset($data['hora_fin'])) {
+                return false;
+            }
+
+            $resultado = validar_horario_trabajo($value, $data['hora_fin']);
+            return $resultado['valido'];
+        });
+
+        // Validador para disponibilidad de conductor
+        Validator::extend('conductor_disponible', function ($attribute, $value, $parameters, $validator) {
+            try {
+                $conductor = Conductor::find($value);
+                if (!$conductor) {
+                    return false;
+                }
+
+                $data = $validator->getData();
+                $fechaInicio = $data['fecha_inicio'] ?? now();
+                $fechaFin = $data['fecha_fin'] ?? now();
+
+                return $conductor->estaDisponibleEntre($fechaInicio, $fechaFin);
+            } catch (\Exception $e) {
+                Log::warning("Error validando disponibilidad de conductor: " . $e->getMessage());
+                return false;
+            }
+        });
+
+        // Validador para límites de rutas por conductor
+        Validator::extend('limite_rutas_conductor', function ($attribute, $value, $parameters, $validator) {
+            try {
+                $conductor = Conductor::find($value);
+                if (!$conductor) {
+                    return false;
+                }
+
+                $limite = sipat_config('rutas_cortas_maximas_semanales', 4);
+                $rutasEstaSemanana = $conductor->rutasEstaSemanana()->count();
+
+                return $rutasEstaSemanana < $limite;
+            } catch (\Exception $e) {
+                return false;
+            }
+        });
+
+        // Validador para eficiencia mínima
+        Validator::extend('eficiencia_minima', function ($attribute, $value, $parameters, $validator) {
+            $minima = sipat_config('eficiencia_minima_conductor', 80);
+            return $value >= $minima;
+        });
+
         // Validador para código de conductor único
-        \Validator::extend('codigo_conductor_unico', function ($attribute, $value, $parameters, $validator) {
+        Validator::extend('codigo_conductor_unico', function ($attribute, $value, $parameters, $validator) {
             $conductorId = $parameters[0] ?? null;
-            $query = \App\Models\Conductor::where('codigo_conductor', $value);
+
+            $query = Conductor::where('codigo', $value);
 
             if ($conductorId) {
                 $query->where('id', '!=', $conductorId);
             }
 
-            return $query->count() === 0;
+            return !$query->exists();
         });
 
-        // Validador para DNI peruano
-        \Validator::extend('dni_peruano', function ($attribute, $value, $parameters, $validator) {
-            return preg_match('/^\d{8}$/', $value);
+        // Mensajes de validación personalizados
+        Validator::replacer('horario_trabajo_valido', function ($message, $attribute, $rule, $parameters) {
+            return 'El horario de trabajo no es válido. Debe tener entre 4 y 12 horas de duración.';
         });
 
-        // Validador para licencia de conducir
-        \Validator::extend('licencia_conducir', function ($attribute, $value, $parameters, $validator) {
-            return preg_match('/^[A-Z]{1,2}\d{7,9}$/', $value);
+        Validator::replacer('conductor_disponible', function ($message, $attribute, $rule, $parameters) {
+            return 'El conductor seleccionado no está disponible en el horario indicado.';
         });
 
-        // Validador para horario válido
-        \Validator::extend('horario_valido', function ($attribute, $value, $parameters, $validator) {
-            return preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/', $value);
+        Validator::replacer('limite_rutas_conductor', function ($message, $attribute, $rule, $parameters) {
+            $limite = sipat_config('rutas_cortas_maximas_semanales', 4);
+            return "El conductor ya ha alcanzado el límite de {$limite} rutas cortas esta semana.";
         });
 
-        // Mensajes personalizados
-        \Validator::replacer('codigo_conductor_unico', function ($message, $attribute, $rule, $parameters) {
+        Validator::replacer('eficiencia_minima', function ($message, $attribute, $rule, $parameters) {
+            $minima = sipat_config('eficiencia_minima_conductor', 80);
+            return "La eficiencia debe ser al menos {$minima}%.";
+        });
+
+        Validator::replacer('codigo_conductor_unico', function ($message, $attribute, $rule, $parameters) {
             return 'El código de conductor ya está en uso.';
-        });
-
-        \Validator::replacer('dni_peruano', function ($message, $attribute, $rule, $parameters) {
-            return 'El DNI debe tener exactamente 8 dígitos.';
-        });
-
-        \Validator::replacer('licencia_conducir', function ($message, $attribute, $rule, $parameters) {
-            return 'El formato de la licencia de conducir no es válido.';
-        });
-
-        \Validator::replacer('horario_valido', function ($message, $attribute, $rule, $parameters) {
-            return 'El horario debe tener el formato HH:MM válido.';
         });
     }
 
@@ -478,7 +802,19 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerModelObservers(): void
     {
-        // Los observadores se registrarán cuando se creen las clases correspondientes
+        try {
+            // Observador para el modelo Conductor
+            Conductor::observe(ConductorObserver::class);
+
+            // Observador para el modelo Validacion
+            Validacion::observe(ValidacionObserver::class);
+
+            // Observador para el modelo Turno
+            Turno::observe(TurnoObserver::class);
+
+        } catch (\Exception $e) {
+            Log::warning('Error registrando observadores de modelos: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -486,39 +822,98 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerSystemEvents(): void
     {
-        // Evento de inicio de sesión
-        \Event::listen(\Illuminate\Auth\Events\Login::class, function ($event) {
-            if (class_exists('\App\Models\HistorialCredenciales')) {
-                try {
-                    \App\Models\HistorialCredenciales::registrarAccesoExitoso($event->user->id);
-                } catch (\Exception $e) {
-                    Log::warning('Error registrando acceso exitoso: ' . $e->getMessage());
-                }
+        // Evento cuando se crea una validación crítica
+        Event::listen('validacion.critica.creada', function ($validacion) {
+            try {
+                app(NotificacionService::class)->enviarNotificacionCritica($validacion);
+                app(AuditoriaService::class)->registrarEvento('validacion_critica_creada', [
+                    'validacion_id' => $validacion->id,
+                    'tipo' => $validacion->tipo,
+                    'conductor_id' => $validacion->conductor_id
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Error procesando validación crítica: ' . $e->getMessage());
             }
         });
 
-        // Evento de cierre de sesión
-        \Event::listen(\Illuminate\Auth\Events\Logout::class, function ($event) {
-            if (class_exists('\App\Models\HistorialCredenciales')) {
-                try {
-                    \App\Models\HistorialCredenciales::registrarLogout($event->user->id);
-                } catch (\Exception $e) {
-                    Log::warning('Error registrando logout: ' . $e->getMessage());
+        // Evento cuando un conductor cambia de estado
+        Event::listen('conductor.estado.cambio', function ($conductor, $estadoAnterior, $estadoNuevo) {
+            try {
+                app(CacheMetricasService::class)->invalidarMetricasConductor($conductor->id);
+
+                app(AuditoriaService::class)->registrarEvento('conductor_cambio_estado', [
+                    'conductor_id' => $conductor->id,
+                    'estado_anterior' => $estadoAnterior,
+                    'estado_nuevo' => $estadoNuevo,
+                    'usuario_id' => auth()->id()
+                ]);
+
+                // Si el conductor pasa a inactivo, verificar impacto en planificación
+                if ($estadoNuevo === 'INACTIVO') {
+                    app(ServicioPlanificacionAutomatizada::class)
+                        ->verificarImpactoConductorInactivo($conductor);
                 }
+            } catch (\Exception $e) {
+                Log::error('Error procesando cambio de estado de conductor: ' . $e->getMessage());
             }
         });
 
-        // Evento de intento de acceso fallido
-        \Event::listen(\Illuminate\Auth\Events\Failed::class, function ($event) {
-            if ($event->user && class_exists('\App\Models\HistorialCredenciales')) {
-                try {
-                    \App\Models\HistorialCredenciales::registrarAccesoFallido(
-                        $event->user->id,
-                        'PASSWORD_INCORRECTO'
-                    );
-                } catch (\Exception $e) {
-                    Log::warning('Error registrando acceso fallido: ' . $e->getMessage());
+        // Evento cuando se completa un turno
+        Event::listen('turno.completado', function ($turno) {
+            try {
+                // Actualizar métricas del conductor
+                $conductor = $turno->conductor;
+                if ($conductor) {
+                    $conductor->actualizarMetricasRendimiento();
+                    app(CacheMetricasService::class)->invalidarMetricasConductor($conductor->id);
                 }
+
+                app(AuditoriaService::class)->registrarEvento('turno_completado', [
+                    'turno_id' => $turno->id,
+                    'conductor_id' => $turno->conductor_id,
+                    'duracion_horas' => $turno->duracion_horas,
+                    'eficiencia' => $turno->eficiencia_calculada
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Error procesando turno completado: ' . $e->getMessage());
+            }
+        });
+
+        // Evento para backup automático
+        Event::listen('backup.automatico.completado', function ($backup) {
+            try {
+                app(NotificacionService::class)->notificarBackupCompletado($backup);
+
+                // Limpiar backups antiguos
+                app(ServicioBackupAutomatizado::class)->limpiarBackupsAntiguos();
+            } catch (\Exception $e) {
+                Log::error('Error procesando backup completado: ' . $e->getMessage());
+            }
+        });
+
+        // Evento cuando el sistema entra en modo mantenimiento
+        Event::listen('sistema.mantenimiento.iniciado', function () {
+            try {
+                Cache::put('sipat_sistema_estado', 'MANTENIMIENTO', 3600);
+                app(NotificacionService::class)->notificarMantenimientoSistema();
+            } catch (\Exception $e) {
+                Log::error('Error durante inicio de mantenimiento: ' . $e->getMessage());
+            }
+        });
+
+        // Evento de login de usuario
+        Event::listen(\Illuminate\Auth\Events\Login::class, function ($event) {
+            try {
+                app(AuditoriaService::class)->registrarEvento('usuario_login', [
+                    'usuario_id' => $event->user->id,
+                    'ip' => request()->ip(),
+                    'user_agent' => request()->userAgent()
+                ]);
+
+                // Limpiar cache de métricas para el usuario
+                app(CacheMetricasService::class)->invalidarCacheUsuario($event->user->id);
+            } catch (\Exception $e) {
+                Log::error('Error registrando login: ' . $e->getMessage());
             }
         });
     }
@@ -528,25 +923,211 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function initializeSystemMonitoring(): void
     {
-        // Monitorear memoria del sistema
-        if (app()->environment('production')) {
-            register_shutdown_function(function () {
-                $memoryUsage = memory_get_peak_usage(true);
-                $memoryLimit = ini_get('memory_limit');
+        try {
+            // Configurar monitoreo de memoria
+            if (function_exists('memory_get_usage')) {
+                $memoriaInicial = memory_get_usage(true);
+                Cache::put('sipat_memoria_inicial', $memoriaInicial, 3600);
+            }
 
-                if ($memoryLimit !== '-1') {
-                    $limitBytes = $this->convertToBytes($memoryLimit);
-                    $percentage = ($memoryUsage / $limitBytes) * 100;
+            // Configurar monitoreo de tiempo de respuesta
+            $tiempoInicio = microtime(true);
+            Cache::put('sipat_tiempo_inicio', $tiempoInicio, 3600);
 
-                    if ($percentage > 90) {
-                        Log::warning("Uso de memoria alto: {$percentage}%", [
-                            'memory_usage' => formatear_bytes($memoryUsage),
-                            'memory_limit' => $memoryLimit
-                        ]);
-                    }
-                }
-            });
+            // Programar verificaciones periódicas
+            $this->programarVerificacionesSistema();
+
+        } catch (\Exception $e) {
+            Log::warning('Error inicializando monitoreo del sistema: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Programar verificaciones del sistema
+     */
+    private function programarVerificacionesSistema(): void
+    {
+        // Solo programar si estamos en un entorno que soporta scheduling
+        if ($this->app->runningInConsole()) {
+            return;
+        }
+
+        try {
+            // Verificar cada 5 minutos el estado del sistema
+            Cache::remember('sipat_ultimo_health_check', 300, function () {
+                $this->ejecutarHealthCheck();
+                return now()->timestamp;
+            });
+
+        } catch (\Exception $e) {
+            Log::warning('Error programando verificaciones: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Ejecutar verificación de salud del sistema
+     */
+    private function ejecutarHealthCheck(): array
+    {
+        $salud = [
+            'estado' => 'OPERATIVO',
+            'timestamp' => now()->toISOString(),
+            'checks' => []
+        ];
+
+        try {
+            // Verificar base de datos
+            $salud['checks']['database'] = $this->verificarBaseDatos();
+
+            // Verificar cache
+            $salud['checks']['cache'] = $this->verificarCache();
+
+            // Verificar memoria
+            $salud['checks']['memoria'] = $this->verificarMemoria();
+
+            // Verificar validaciones pendientes
+            $salud['checks']['validaciones'] = $this->verificarValidacionesPendientes();
+
+            // Determinar estado general
+            $estadosChecks = array_column($salud['checks'], 'estado');
+            if (in_array('CRITICO', $estadosChecks)) {
+                $salud['estado'] = 'CRITICO';
+            } elseif (in_array('ADVERTENCIA', $estadosChecks)) {
+                $salud['estado'] = 'ADVERTENCIA';
+            }
+
+            Cache::put('sipat_health_status', $salud, 300);
+
+        } catch (\Exception $e) {
+            $salud['estado'] = 'ERROR';
+            $salud['error'] = $e->getMessage();
+            Log::error('Error en health check: ' . $e->getMessage());
+        }
+
+        return $salud;
+    }
+
+    /**
+     * Verificar estado de la base de datos
+     */
+    private function verificarBaseDatos(): array
+    {
+        try {
+            \DB::connection()->getPdo();
+            $tiempoInicio = microtime(true);
+            \DB::select('SELECT 1');
+            $tiempoRespuesta = (microtime(true) - $tiempoInicio) * 1000;
+
+            return [
+                'estado' => $tiempoRespuesta > 1000 ? 'ADVERTENCIA' : 'OK',
+                'tiempo_respuesta_ms' => round($tiempoRespuesta, 2),
+                'mensaje' => $tiempoRespuesta > 1000 ? 'Respuesta lenta' : 'Conexión estable'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'estado' => 'CRITICO',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Verificar estado del cache
+     */
+    private function verificarCache(): array
+    {
+        try {
+            $key = 'sipat_cache_test_' . uniqid();
+            $valor = 'test_value';
+
+            Cache::put($key, $valor, 60);
+            $valorRecuperado = Cache::get($key);
+            Cache::forget($key);
+
+            return [
+                'estado' => $valorRecuperado === $valor ? 'OK' : 'ADVERTENCIA',
+                'funcional' => $valorRecuperado === $valor,
+                'driver' => config('cache.default')
+            ];
+        } catch (\Exception $e) {
+            return [
+                'estado' => 'CRITICO',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Verificar uso de memoria
+     */
+    private function verificarMemoria(): array
+    {
+        try {
+            $memoriaActual = memory_get_usage(true);
+            $memoriaMaxima = ini_get('memory_limit');
+            $memoriaMaximaBytes = $this->convertirABytes($memoriaMaxima);
+
+            $porcentajeUso = ($memoriaActual / $memoriaMaximaBytes) * 100;
+
+            return [
+                'estado' => $porcentajeUso > 85 ? 'CRITICO' : ($porcentajeUso > 70 ? 'ADVERTENCIA' : 'OK'),
+                'uso_actual' => formatear_bytes($memoriaActual),
+                'limite' => $memoriaMaxima,
+                'porcentaje_uso' => round($porcentajeUso, 2)
+            ];
+        } catch (\Exception $e) {
+            return [
+                'estado' => 'ERROR',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Verificar validaciones pendientes críticas
+     */
+    private function verificarValidacionesPendientes(): array
+    {
+        try {
+            if (!\Schema::hasTable('validaciones')) {
+                return ['estado' => 'OK', 'mensaje' => 'Tabla validaciones no existe aún'];
+            }
+
+            $validacionesCriticas = Validacion::where('severidad', 'CRITICA')
+                ->where('estado', 'PENDIENTE')
+                ->where('created_at', '<=', now()->subMinutes(30))
+                ->count();
+
+            return [
+                'estado' => $validacionesCriticas > 0 ? 'CRITICO' : 'OK',
+                'validaciones_criticas_pendientes' => $validacionesCriticas,
+                'mensaje' => $validacionesCriticas > 0 ?
+                    "Hay {$validacionesCriticas} validaciones críticas pendientes" :
+                    'No hay validaciones críticas pendientes'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'estado' => 'ERROR',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Convertir string de memoria a bytes
+     */
+    private function convertirABytes($memoria): int
+    {
+        $memoria = trim($memoria);
+        $ultimo = strtolower($memoria[strlen($memoria) - 1]);
+        $numero = (int) $memoria;
+
+        return match($ultimo) {
+            'g' => $numero * 1024 * 1024 * 1024,
+            'm' => $numero * 1024 * 1024,
+            'k' => $numero * 1024,
+            default => $numero
+        };
     }
 
     /**
@@ -554,27 +1135,41 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function configureCustomLogs(): void
     {
-        // Canal de log para planificación
-        config([
-            'logging.channels.planificacion' => [
-                'driver' => 'daily',
-                'path' => storage_path('logs/planificacion.log'),
-                'level' => 'info',
-                'days' => 30,
-            ],
-            'logging.channels.backups' => [
-                'driver' => 'daily',
-                'path' => storage_path('logs/backups.log'),
-                'level' => 'info',
-                'days' => 90,
-            ],
-            'logging.channels.seguridad' => [
-                'driver' => 'daily',
-                'path' => storage_path('logs/seguridad.log'),
-                'level' => 'warning',
-                'days' => 180,
-            ]
-        ]);
+        try {
+            // Configurar canal de log específico para SIPAT
+            config([
+                'logging.channels.sipat' => [
+                    'driver' => 'daily',
+                    'path' => storage_path('logs/sipat/sipat.log'),
+                    'level' => env('SIPAT_LOG_LEVEL', 'info'),
+                    'days' => sipat_config('log_retention_days', 30),
+                    'permission' => 0664,
+                ],
+                'logging.channels.sipat_auditoria' => [
+                    'driver' => 'daily',
+                    'path' => storage_path('logs/sipat/auditoria.log'),
+                    'level' => 'info',
+                    'days' => 90,
+                    'permission' => 0664,
+                ],
+                'logging.channels.sipat_errores' => [
+                    'driver' => 'daily',
+                    'path' => storage_path('logs/sipat/errores.log'),
+                    'level' => 'error',
+                    'days' => 90,
+                    'permission' => 0664,
+                ]
+            ]);
+
+            // Crear directorios si no existen
+            $directorioLogs = storage_path('logs/sipat');
+            if (!file_exists($directorioLogs)) {
+                mkdir($directorioLogs, 0755, true);
+            }
+
+        } catch (\Exception $e) {
+            Log::warning('Error configurando logs personalizados: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -582,73 +1177,92 @@ class SipatServiceProvider extends ServiceProvider
      */
     private function registerCustomMiddleware(): void
     {
-        // Los middleware se registrarán cuando se creen las clases correspondientes
+        try {
+            $router = $this->app['router'];
+
+            // Registrar middleware personalizado
+            $router->aliasMiddleware('log.actividades', LogActividades::class);
+            $router->aliasMiddleware('verificar.estado.sistema', VerificarEstadoSistema::class);
+
+            // Aplicar middleware a grupos específicos
+            $router->middlewareGroup('sipat', [
+                'log.actividades',
+                'verificar.estado.sistema'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::warning('Error registrando middleware personalizado: ' . $e->getMessage());
+        }
     }
 
     /**
-     * Obtener notificaciones del usuario actual
+     * Registrar comandos de consola personalizados
      */
-    private function obtenerNotificacionesUsuario(): array
+    private function registerConsoleCommands(): void
     {
-        if (!auth()->check()) {
-            return [];
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                \App\Console\Commands\ValidarSistema::class,
+                \App\Console\Commands\LimpiarCache::class,
+                \App\Console\Commands\GenerarReporteEstado::class,
+                \App\Console\Commands\OptimizarBaseDatos::class,
+                \App\Console\Commands\BackupAutomatico::class,
+                \App\Console\Commands\RepararSistema::class,
+            ]);
+        }
+    }
+
+    /**
+     * Configurar tareas programadas
+     */
+    private function configureScheduledTasks(): void
+    {
+        // Solo configurar en consola y si el scheduling está habilitado
+        if (!$this->app->runningInConsole() || !sipat_config('habilitar_tareas_programadas', true)) {
+            return;
         }
 
         try {
-            // Obtener validaciones asignadas al usuario
-            $validacionesPendientes = 0;
-            if (class_exists('\App\Models\Validacion')) {
-                $validacionesPendientes = \App\Models\Validacion::where('asignado_a', auth()->id())
-                    ->where('estado', 'PENDIENTE')
-                    ->count();
-            }
+            $this->app->booted(function () {
+                $schedule = $this->app->make(Schedule::class);
 
-            // Obtener conductores críticos si es supervisor o admin
-            $conductoresCriticos = 0;
-            if (auth()->user()->hasAnyRole(['admin', 'supervisor']) && class_exists('\App\Models\Conductor')) {
-                $conductoresCriticos = \App\Models\Conductor::where('dias_acumulados', '>=', 6)
-                    ->where('estado', 'DISPONIBLE')
-                    ->count();
-            }
+                // Ejecutar validaciones automáticas cada hora
+                $schedule->command('sipat:validar --automatico')
+                    ->hourly()
+                    ->withoutOverlapping()
+                    ->runInBackground();
 
-            return [
-                'validaciones_pendientes' => $validacionesPendientes,
-                'conductores_criticos' => $conductoresCriticos,
-                'total' => $validacionesPendientes + $conductoresCriticos
-            ];
+                // Limpiar cache cada 6 horas
+                $schedule->command('sipat:limpiar-cache')
+                    ->everySixHours()
+                    ->withoutOverlapping();
+
+                // Backup automático diario a las 2:00 AM
+                $schedule->command('sipat:backup --tipo=completo')
+                    ->dailyAt('02:00')
+                    ->withoutOverlapping()
+                    ->runInBackground();
+
+                // Optimización de BD semanal (domingos a las 3:00 AM)
+                $schedule->command('sipat:optimizar-bd')
+                    ->weekly()
+                    ->sundays()
+                    ->at('03:00')
+                    ->withoutOverlapping();
+
+                // Generar reporte de estado diario
+                $schedule->command('sipat:generar-reporte-estado')
+                    ->dailyAt('23:00');
+
+                // Limpiar logs antiguos semanalmente
+                $schedule->command('sipat:limpiar-logs')
+                    ->weekly()
+                    ->saturdays()
+                    ->at('01:00');
+            });
+
         } catch (\Exception $e) {
-            Log::warning('Error obteniendo notificaciones de usuario: ' . $e->getMessage());
-            return [];
+            Log::warning('Error configurando tareas programadas: ' . $e->getMessage());
         }
-    }
-
-    /**
-     * Convertir string de memoria a bytes
-     */
-    private function convertToBytes(string $memory): int
-    {
-        $unit = strtolower(substr($memory, -1));
-        $number = (int) substr($memory, 0, -1);
-
-        switch ($unit) {
-            case 'g': return $number * 1024 * 1024 * 1024;
-            case 'm': return $number * 1024 * 1024;
-            case 'k': return $number * 1024;
-            default: return $number;
-        }
-    }
-
-    /**
-     * Obtener los servicios proporcionados por este provider
-     */
-    public function provides(): array
-    {
-        return [
-            ServicioPlanificacionAutomatizada::class,
-            ServicioBackupAutomatizado::class,
-            'sipat.planificacion',
-            'sipat.backup',
-            'sipat.config'
-        ];
     }
 }
